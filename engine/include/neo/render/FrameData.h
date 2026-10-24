@@ -56,6 +56,11 @@ struct FrameConstants {
 
   // x = render scale, y = exposure key, z = bloom intensity, w = quality tier
   vec4 post_params = vec4(1.0f, 0.18f, 0.06f, 1.0f);
+
+  // Clustered lighting: x = near, y = far, z = grid X, w = grid Y
+  vec4 cluster_params = vec4(0.1f, 1000.0f, 16.0f, 9.0f);
+  // x = grid Z, y = tile width px, z = tile height px, w = lights per cluster
+  vec4 cluster_dims = vec4(24.0f, 1.0f, 1.0f, 32.0f);
 };
 
 static_assert((sizeof(FrameConstants) % 16) == 0,

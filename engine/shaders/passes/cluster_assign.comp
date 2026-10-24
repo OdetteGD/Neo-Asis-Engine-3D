@@ -1,0 +1,123 @@
+#version 450
+// ===========================================================================
+//  cluster_assign.comp — clustered forward+ light assignment.
+//
+//  One thread per cluster. The view frustum is split into a 16x9x24 grid:
+//  tiles in screen space, logarithmic slices in depth. For each cluster we
+//  build a view-space bounding sphere from the slice corners and test every
+//  light's bounding sphere against it.
+//
+//  Output layout (two SSBOs, fixed capacity per cluster — no atomics, no
+//  variable-length indirection, which keeps the lighting loop branch-predictable
+//  on mobile GPUs):
+//
+//      counts[cluster]                  -> number of lights in the cluster
+//      indices[cluster * MAX + slot]    -> light indices
+//
+//  A fixed capacity wastes a little memory but removes the need for a second
+//  compaction pass and an atomic counter per cluster.
+// ===========================================================================
+
+#extension GL_GOOGLE_include_directive : require
+#include "common/frame_data.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// Note: frame_data.glsl already declares ClusterCounts/ClusterIndices at
+// bindings 5/6 for the lighting pass, so these output blocks need their own
+// names (GLSL forbids reusing a block name in the same interface).
+layout(std430, binding = 0) writeonly buffer OutCounts { uint counts[]; };
+layout(std430, binding = 1) writeonly buffer OutIndices { uint indices[]; };
+
+layout(push_constant) uniform ClusterPC {
+  uvec4 grid;    // x, y, z slices
+  vec4 params;   // x = near, y = far, z = light count, w = inverse log ratio
+  vec4 dims;     // x = tile width, y = tile height, z = max per cluster
+} pc;
+
+// Unproject a screen position at a given view-space depth (-z) into view space.
+vec3 view_ray(vec2 ndc, float view_depth) {
+  vec4 clip = frame.invViewProj * vec4(ndc, 1.0, 1.0);
+  vec3 world = clip.xyz / clip.w;
+  vec3 to_point = normalize(world - frame.cameraPosition.xyz);
+  return frame.cameraPosition.xyz + to_point * (view_depth / max(dot(to_point,
+         normalize(vec3(frame.view[0][2], frame.view[1][2], frame.view[2][2]))), 1e-5));
+}
+
+void main() {
+  const uvec3 id = gl_GlobalInvocationID;
+  if (id.x >= pc.grid.x || id.y >= pc.grid.y || id.z >= pc.grid.z) return;
+
+  const uint cluster = id.x + id.y * pc.grid.x + id.z * pc.grid.x * pc.grid.y;
+
+  // --- Depth slice bounds (logarithmic) -----------------------------------
+  const float near_z = pc.params.x;
+  const float far_z = pc.params.y;
+  const float ratio = far_z / near_z;
+
+  float slice_near = near_z * pow(ratio, float(id.z) / float(pc.grid.z));
+  float slice_far = near_z * pow(ratio, float(id.z + 1u) / float(pc.grid.z));
+
+  // --- Screen tile bounds --------------------------------------------------
+  vec2 tile_min = vec2(float(id.x), float(id.y)) / vec2(pc.grid.xy);
+  vec2 tile_max = vec2(float(id.x + 1u), float(id.y + 1u)) / vec2(pc.grid.xy);
+  vec2 ndc_min = tile_min * 2.0 - 1.0;
+  vec2 ndc_max = tile_max * 2.0 - 1.0;
+
+  // --- Cluster bounding sphere in view space ------------------------------
+  // Instead of a tight AABB, approximate with the sphere through the slice
+  // corners. Conservative enough to never drop a light, cheap to test.
+  vec3 center_view = vec3(0.0);
+  float radius = 0.0;
+
+  for (int c = 0; c < 4; ++c) {
+    vec2 ndc = vec2((c & 1) != 0 ? ndc_max.x : ndc_min.x,
+                    (c & 2) != 0 ? ndc_max.y : ndc_min.y);
+    vec3 p_near = view_ray(ndc, slice_near);
+    vec3 p_far = view_ray(ndc, slice_far);
+    center_view += p_near + p_far;
+  }
+  center_view *= 0.125;  // 8 points averaged
+
+  for (int c = 0; c < 4; ++c) {
+    vec2 ndc = vec2((c & 1) != 0 ? ndc_max.x : ndc_min.x,
+                    (c & 2) != 0 ? ndc_max.y : ndc_min.y);
+    vec3 p_near = view_ray(ndc, slice_near);
+    vec3 p_far = view_ray(ndc, slice_far);
+    radius = max(radius, distance(center_view, p_near));
+    radius = max(radius, distance(center_view, p_far));
+  }
+  radius *= 1.05;  // a little slack for the sphere approximation
+
+  // --- Assign lights -------------------------------------------------------
+  const uint light_count = min(uint(pc.params.z), 256u);
+  const uint capacity = uint(pc.dims.z);
+  uint count = 0u;
+
+  for ( uint i = 0u; i < light_count && count < capacity; ++i) {
+    const GpuLight light = lights[i];
+    const int type = int(light.params.x);
+
+    float light_radius;
+    vec3 light_pos_view;
+
+    if (type == NEO_LIGHT_DIRECTIONAL) {
+      // Directional lights affect every cluster that faces them; include
+      // unconditionally and let the N·L term drop it in the shader.
+      indices[cluster * capacity + count] = i;
+      ++count;
+      continue;
+    }
+
+    light_radius = light.positionRange.w;
+    light_pos_view = (frame.view * vec4(light.positionRange.xyz, 1.0)).xyz;
+
+    // Sphere/sphere overlap in view space.
+    if (distance(center_view, light_pos_view) > radius + light_radius) continue;
+
+    indices[cluster * capacity + count] = i;
+    ++count;
+  }
+
+  counts[cluster] = count;
+}

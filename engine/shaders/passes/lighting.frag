@@ -81,9 +81,38 @@ void main() {
   const float NoV = saturate1(dot(N, V));
 
   vec3 direct = vec3(0.0);
-  const uint light_count = min(push.flags.x, 64u);
 
-  for (uint i = 0u; i < light_count; ++i) {
+  // --- Clustered light lookup --------------------------------------------
+  // Pick the cluster covering this pixel, then walk only its light list.
+  // Falls back to the flat list when clustering is disabled (flags.y == 2).
+  const vec3 view_pos = (frame.view * vec4(world_pos, 1.0)).xyz;
+  const float view_depth = max(-view_pos.z, frame.clusterParams.x);
+
+  uint cluster_index = 0u;
+  uint cluster_count = 0u;
+  uint capacity = uint(frame.clusterDims.w);
+
+  if (push.flags.y != 2u) {
+    const vec2 tile = floor(gl_FragCoord.xy /
+                            max(vec2(frame.clusterDims.y, frame.clusterDims.z), vec2(1.0)));
+    const uint cx = uint(clamp(tile.x, 0.0, frame.clusterParams.z - 1.0));
+    const uint cy = uint(clamp(tile.y, 0.0, frame.clusterParams.w - 1.0));
+
+    const float log_ratio = log(frame.clusterParams.y / frame.clusterParams.x);
+    const float slice = log(view_depth / frame.clusterParams.x) / log_ratio;
+    const uint cz = uint(clamp(slice * frame.clusterDims.x, 0.0, frame.clusterDims.x - 1.0));
+
+    cluster_index = cx + cy * uint(frame.clusterParams.z) +
+                    cz * uint(frame.clusterParams.z) * uint(frame.clusterParams.w);
+    cluster_count = min(clusterCounts[cluster_index], capacity);
+  }
+
+  const uint light_count = min(push.flags.x, 64u);
+  const uint iterations = (cluster_count > 0u) ? cluster_count : 0u;
+
+  for (uint k = 0u; k < iterations; ++k) {
+    const uint i = clusterIndices[cluster_index * capacity + k];
+    if (i >= light_count) continue;
     const GpuLight L = lights[i];
     const int type = int(L.params.x);
     vec3 Ldir;

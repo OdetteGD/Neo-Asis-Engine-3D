@@ -38,7 +38,14 @@ layout(std430, binding = 0) readonly buffer FrameBlock {
   vec4  fogParams;
 
   vec4  postParams;        // x = render scale, y = exposure key, z = bloom, w = tier
+
+  vec4  clusterParams;     // x = near, y = far, z = gridX, w = gridY
+  vec4  clusterDims;       // x = gridZ, y = tileW, z = tileH, w = maxPerCluster
 } frame;
+
+// Clustered light list, filled by cluster_assign.comp.
+layout(std430, binding = 5) readonly buffer ClusterCounts { uint clusterCounts[]; };
+layout(std430, binding = 6) readonly buffer ClusterIndices { uint clusterIndices[]; };
 
 // ---- Scenery lights: set 0, binding 1 -------------------------------------
 struct GpuLight {

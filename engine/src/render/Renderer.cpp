@@ -83,6 +83,7 @@ struct Renderer::Impl {
   VkDescriptorSet scene_set = VK_NULL_HANDLE;
   VkDescriptorSet post_set = VK_NULL_HANDLE;
   VkDescriptorSet cloud_set = VK_NULL_HANDLE;
+  VkDescriptorSet cluster_set = VK_NULL_HANDLE;
   VkDescriptorSetLayout cloud_layout = VK_NULL_HANDLE;
   VkPipelineLayout cloud_pipeline_layout = VK_NULL_HANDLE;
 
@@ -116,6 +117,19 @@ struct Renderer::Impl {
   VkPipeline p_bloom_up = VK_NULL_HANDLE;
   VkPipeline p_tonemap = VK_NULL_HANDLE;
   VkPipeline p_clouds = VK_NULL_HANDLE;
+  VkPipeline p_cluster_assign = VK_NULL_HANDLE;
+
+  // Clustered lighting buffers
+  static constexpr u32 kClusterGridX = 16;
+  static constexpr u32 kClusterGridY = 9;
+  static constexpr u32 kClusterGridZ = 24;
+  static constexpr u32 kMaxLightsPerCluster = 32;
+  VkBuffer cluster_counts = VK_NULL_HANDLE;
+  VmaAllocation cluster_counts_alloc = VK_NULL_HANDLE;
+  VkBuffer cluster_indices = VK_NULL_HANDLE;
+  VmaAllocation cluster_indices_alloc = VK_NULL_HANDLE;
+  VkDescriptorSetLayout cluster_layout = VK_NULL_HANDLE;
+  VkPipelineLayout cluster_pipeline_layout = VK_NULL_HANDLE;
   VkSampler linear_sampler = VK_NULL_HANDLE;
 
   // Shadow atlas (single 2D image, cascades as tiles)
@@ -319,6 +333,24 @@ struct Renderer::Impl {
     write_sampler(post_set, 1, bloom_view);
     write_sampler(post_set, 2, depth.view);
 
+    // Clustered light lists.
+    VkDescriptorBufferInfo count_buf{cluster_counts, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo index_buf{cluster_indices, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet cluster_writes[2]{};
+    cluster_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cluster_writes[0].dstSet = scene_set;
+    cluster_writes[0].dstBinding = 5;
+    cluster_writes[0].descriptorCount = 1;
+    cluster_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    cluster_writes[0].pBufferInfo = &count_buf;
+    cluster_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cluster_writes[1].dstSet = scene_set;
+    cluster_writes[1].dstBinding = 6;
+    cluster_writes[1].descriptorCount = 1;
+    cluster_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    cluster_writes[1].pBufferInfo = &index_buf;
+    vkUpdateDescriptorSets(dev, 2, cluster_writes, 0, nullptr);
+
     // Cloud output (storage image, always written in GENERAL layout).
     if (cloud.view != VK_NULL_HANDLE && alloc(cloud_layout, cloud_set)) {
       VkDescriptorImageInfo info{};
@@ -362,6 +394,16 @@ struct Renderer::Impl {
       });
       cloud_pipeline_layout =
           pipelines->create_layout({frame_layout, cloud_layout}, 64, VK_SHADER_STAGE_COMPUTE_BIT);
+    }
+
+    // Cluster assignment: two output SSBOs.
+    if (cluster_layout == VK_NULL_HANDLE) {
+      cluster_layout = pipelines->create_set_layout({
+          {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+          {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      });
+      cluster_pipeline_layout =
+          pipelines->create_layout({frame_layout, cluster_layout}, 64, VK_SHADER_STAGE_COMPUTE_BIT);
     }
 
     // The IBL baker needs the frame layout before the lighting layout can
@@ -465,6 +507,12 @@ struct Renderer::Impl {
         make_fs(pipelines->load("fb/bloom_up.frag"), "bloom_up", &p_bloom_up, post_pipeline_layout,
                 {kHdrFormat});
       }
+      VkShaderModule cluster_cs = pipelines->load("passes/cluster_assign.comp");
+      if (cluster_cs) {
+        p_cluster_assign = pipelines->create(
+            ComputePipelineDesc{"cluster_assign", cluster_cs, cluster_pipeline_layout});
+      }
+
       VkShaderModule cloud_cs = pipelines->load("passes/clouds.comp");
       if (cloud_cs) {
         p_clouds =
@@ -637,7 +685,7 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
   // --- Descriptor pool -----------------------------------------------------
   const VkDescriptorPoolSize sizes[] = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 32},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64},
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64},
   };
   VkDescriptorPoolCreateInfo dpci{};
@@ -654,6 +702,27 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
     return nullptr;
   }
   I.ibl = IBLBaker::create(*r->ctx_, *I.pipelines, IBLDesc{});
+
+  // --- Cluster buffers ---------------------------------------------------
+  {
+    const u32 clusters = Impl::kClusterGridX * Impl::kClusterGridY * Impl::kClusterGridZ;
+    BufferDesc cd{};
+    cd.name = "ClusterCounts";
+    cd.size = sizeof(u32) * clusters;
+    cd.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    cd.memory = MemoryClass::DeviceLocal;
+    I.alloc->create_buffer(cd, I.cluster_counts, I.cluster_counts_alloc);
+
+    BufferDesc ci{};
+    ci.name = "ClusterIndices";
+    ci.size = sizeof(u32) * clusters * Impl::kMaxLightsPerCluster;
+    ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    ci.memory = MemoryClass::DeviceLocal;
+    I.alloc->create_buffer(ci, I.cluster_indices, I.cluster_indices_alloc);
+
+    NEO_INFO(kRender, "Cluster grid {}x{}x{} ({} clusters, {} lights each)", Impl::kClusterGridX,
+             Impl::kClusterGridY, Impl::kClusterGridZ, clusters, Impl::kMaxLightsPerCluster);
+  }
 
   I.create_targets(r->width_, r->height_, r->quality_);
   if (!I.create_pipelines(r->quality_)) {
@@ -685,6 +754,29 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[1].pBufferInfo = &ssbo;
     vkUpdateDescriptorSets(r->ctx_->device(), 2, writes, 0, nullptr);
+  }
+
+  // --- Cluster descriptor set --------------------------------------------
+  {
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = I.descriptor_pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &I.cluster_layout;
+    NEO_VK_CHECK(vkAllocateDescriptorSets(r->ctx_->device(), &ai, &I.cluster_set));
+
+    VkDescriptorBufferInfo cb{I.cluster_counts, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo ib{I.cluster_indices, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[2]{};
+    for (int k = 0; k < 2; ++k) {
+      w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w[k].dstSet = I.cluster_set;
+      w[k].dstBinding = static_cast<u32>(k);
+      w[k].descriptorCount = 1;
+      w[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      w[k].pBufferInfo = (k == 0) ? &cb : &ib;
+    }
+    vkUpdateDescriptorSets(r->ctx_->device(), 2, w, 0, nullptr);
   }
 
   I.write_pass_sets();
@@ -775,6 +867,13 @@ bool Renderer::begin_frame() {
                        static_cast<f32>(static_cast<u8>(quality_.preset)));
   c.shadow_params = vec4(static_cast<f32>(I.shadow_cascade_count), static_cast<f32>(I.shadow_size),
                          0.0008f, 1.5f);
+  // Cluster grid: square-ish tiles over the render target.
+  const f32 tiles_x = static_cast<f32>(Impl::kClusterGridX);
+  const f32 tiles_y = static_cast<f32>(Impl::kClusterGridY);
+  c.cluster_params = vec4(0.1f, 500.0f, tiles_x, tiles_y);
+  c.cluster_dims =
+      vec4(static_cast<f32>(Impl::kClusterGridZ), static_cast<f32>(width_) / tiles_x,
+           static_cast<f32>(height_) / tiles_y, static_cast<f32>(Impl::kMaxLightsPerCluster));
   std::memcpy(f.frame_ubo_mapped, &c, sizeof(FrameConstants));
   return true;
 }
@@ -963,6 +1062,34 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     cmd.memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    cmd.label_end(*ctx_);
+  }
+
+  // =========================================================================
+  //  Pass 2b — Cluster light assignment (compute)
+  // =========================================================================
+  if (I.p_cluster_assign != VK_NULL_HANDLE && I.cluster_set != VK_NULL_HANDLE && light_count > 0) {
+    cmd.label_begin(*ctx_, "ClusterAssign", vec4(0.5f, 0.8f, 0.4f, 1.0f));
+    cmd.bind_compute(I.p_cluster_assign);
+    cmd.bind_compute_descriptor_sets(I.cluster_pipeline_layout, 0, 1, &f.frame_set);
+    cmd.bind_compute_descriptor_sets(I.cluster_pipeline_layout, 1, 1, &I.cluster_set);
+
+    struct ClusterPC {
+      uvec4 grid;
+      vec4 params; // near, far, light count, inv log ratio
+      vec4 dims;   // tile w, tile h, max per cluster
+    } cpc{};
+    cpc.grid = uvec4(Impl::kClusterGridX, Impl::kClusterGridY, Impl::kClusterGridZ, 0u);
+    cpc.params = vec4(0.1f, 500.0f, static_cast<f32>(light_count), 1.0f / std::log(500.0f / 0.1f));
+    cpc.dims = vec4(static_cast<f32>(width_) / static_cast<f32>(Impl::kClusterGridX),
+                    static_cast<f32>(height_) / static_cast<f32>(Impl::kClusterGridY),
+                    static_cast<f32>(Impl::kMaxLightsPerCluster), 0.0f);
+    cmd.push_constants(I.cluster_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(cpc), &cpc);
+    cmd.dispatch(Impl::kClusterGridX, Impl::kClusterGridY, Impl::kClusterGridZ);
+
+    cmd.memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     cmd.label_end(*ctx_);
   }
 

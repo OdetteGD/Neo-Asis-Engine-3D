@@ -18,7 +18,7 @@ if(NEO_SPV_OUTPUTS)
   add_custom_target(neo_android_shaders ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ASSET_SHADER_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/shaders" "${ASSET_SHADER_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}/neoasis/shaders" "${ASSET_SHADER_DIR}"
     COMMENT "Staging compiled shaders into APK assets")
   add_dependencies(neo_android_shaders neo_engine)
 endif()
