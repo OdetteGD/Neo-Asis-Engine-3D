@@ -135,13 +135,11 @@ if(NOT NEO_PLATFORM_ANDROID)
   target_link_libraries(neo_engine PUBLIC glfw)
 endif()
 
-if(UNIX AND NOT APPLE)
-  target_link_libraries(neo_engine PRIVATE pthread)
-  if(NOT NEO_PLATFORM_ANDROID)
-    target_link_libraries(neo_engine PUBLIC ${CMAKE_DL_LIBS})
-    find_package(Threads REQUIRED)
-    target_link_libraries(neo_engine PUBLIC Threads::Threads)
-  endif()
+# Android's bionic has no separate libpthread (-lpthread fails to link), so
+# threads come from libc there. Desktop needs the explicit dependency.
+if(UNIX AND NOT APPLE AND NOT NEO_PLATFORM_ANDROID)
+  find_package(Threads REQUIRED)
+  target_link_libraries(neo_engine PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 if(NEO_STRICT_WARNINGS)
