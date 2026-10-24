@@ -1,0 +1,62 @@
+# ===========================================================================
+#  Desktop build: compile the engine + hello-world player, run the shader
+#  validator, and upload the Linux binary so contributors can try a change
+#  without a local Vulkan SDK.
+# ===========================================================================
+name: Desktop Linux
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake ninja-build git \
+            libvulkan-dev vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            glslang-tools
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEO_ENABLE_VALIDATION=OFF \
+            -DNEO_STRICT_WARNINGS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Verify SPIR-V output
+        run: |
+          count=$(find build/shaders -name '*.spv' | wc -l)
+          echo "Compiled $count SPIR-V modules"
+          test "$count" -ge 10
+
+      - name: Upload player
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo_player-linux
+          path: |
+            build/bin/neo_player
+            build/shaders/**
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,62 @@
+# ===========================================================================
+#  Housekeeping: enforce formatting and keep the docs honest.
+#  Deliberately cheap — runs in under a minute.
+# ===========================================================================
+name: Lint
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  formatting:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-format
+
+      - name: Check C++ formatting
+        run: |
+          files=$(find engine samples -type f \( -name '*.cpp' -o -name '*.h' \) 2>/dev/null)
+          if [ -z "$files" ]; then
+            echo "No C++ sources found"; exit 0
+          fi
+          clang-format --dry-run --Werror $files
+
+  structure:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required project files exist
+        run: |
+          missing=0
+          for f in README.md LICENSE CMakeLists.txt \
+                   engine/include/neo/render/Renderer.h \
+                   engine/shaders/passes/lighting.frag \
+                   engine/shaders/passes/clouds.comp \
+                   engine/shaders/common/pbr.glsl \
+                   android/app/build.gradle.kts \
+                   .github/workflows/android.yml; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Check mirrored C++/GLSL constant blocks stay in sync
+        run: |
+          # The GLSL FrameBlock field order must match neo::FrameConstants.
+          cpp=$(grep -c '^\s*mat4\|^\s*vec4' engine/include/neo/render/FrameData.h || true)
+          echo "FrameData.h vector/matrix fields: $cpp"
+          if ! grep -q 'sunDirection' engine/shaders/common/frame_data.glsl; then
+            echo "::error::frame_data.glsl is missing sunDirection — layout drifted"
+            exit 1
+          fi

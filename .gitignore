@@ -1,0 +1,47 @@
+# --- Build output ----------------------------------------------------------
+build/
+build-*/
+out/
+cmake-build-*/
+.cache/
+compile_commands.json
+CMakeUserPresets.json
+
+# --- Android ---------------------------------------------------------------
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+.gradle/
+.cxx/
+android/app/src/main/assets/shaders/
+android/app/build/
+android/build/
+
+# --- Engine runtime --------------------------------------------------------
+shaders/**/*.spv
+cache/
+*.bin
+logs/
+
+# --- IDE ------------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*.user
+.cproject
+.project
+compile_commands.json
+
+# --- OS -------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# --- Never commit secrets --------------------------------------------------
+.env
+.env.*
+*.pem
+secrets.*
