@@ -16,10 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang-format
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-format
+      # Pin the formatter: apt ships clang-format 14 on 22.04, which disagrees
+      # with 18 on a couple of constructs and would fail an otherwise clean
+      # tree. The pin keeps local and CI output identical.
+      - name: Install clang-format 18
+        run: pip install --quiet clang-format==18.1.8
 
       - name: Check C++ formatting
         run: |
