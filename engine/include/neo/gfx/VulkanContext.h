@@ -131,6 +131,7 @@ private:
   std::unique_ptr<GpuAllocator> allocator_;
   bool validation_enabled_ = false;
   u32 instance_api_version_ = VK_API_VERSION_1_2;
+  VkPhysicalDeviceFeatures supported_features_{};
   bool has_khr_dynamic_rendering_ = false;
   bool has_khr_synchronization2_ = false;
 };

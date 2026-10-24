@@ -31,4 +31,4 @@ add_library(neo_player_android SHARED
   engine/src/platform/android/AndroidMain.cpp)
 target_link_libraries(neo_player_android PRIVATE neo_engine)
 set_target_properties(neo_player_android PROPERTIES
-  PREFIX "" OUTPUT_NAME "neoasis")
+  OUTPUT_NAME "neoasis")  # -> libneoasis.so ; Android only loads lib*.so

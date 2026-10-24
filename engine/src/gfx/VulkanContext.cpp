@@ -121,6 +121,8 @@ std::unique_ptr<VulkanContext> VulkanContext::create(const DeviceDesc& desc) {
   ctx->create_instance(desc);
   ctx->pick_physical_device(desc);
   ctx->create_logical_device(desc);
+  if (ctx->device_ == VK_NULL_HANDLE)
+    return nullptr; // unsupported device
 
   GpuAllocatorDesc ad{};
   ad.instance = ctx->instance_;
@@ -338,6 +340,7 @@ void VulkanContext::query_features() {
   f12.pNext = &f13;
 
   vkGetPhysicalDeviceFeatures2(physical_device_, &f2);
+  supported_features_ = f2.features;
 
   features_.dynamic_rendering = f13.dynamicRendering == VK_TRUE;
   features_.synchronization2 = f13.synchronization2 == VK_TRUE;
@@ -408,15 +411,17 @@ void VulkanContext::query_features() {
 void VulkanContext::create_logical_device(const DeviceDesc& desc) {
   query_features();
 
+  // Only the swapchain is genuinely required. Everything else is filtered
+  // against the device's extension list below; an unsupported *required*
+  // extension fails vkCreateDevice, which is a launch abort.
   std::vector<const char*> device_exts{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-      VK_KHR_MAINTENANCE_1_EXTENSION_NAME,
   };
   // Optional but valuable on mobile GPUs.
   std::vector<const char*> optional{
-      VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,     VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME,
-      VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
-      VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+      VK_KHR_MAINTENANCE_1_EXTENSION_NAME,     VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
+      VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME,  VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
+      VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
   };
   for (const char* e : desc.extra_device_extensions)
     device_exts.push_back(e);
@@ -511,11 +516,18 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
   VkPhysicalDeviceFeatures2 f2{};
   f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   f2.pNext = &f11;
+  // Request ONLY features the device reported. Asking for an unsupported
+  // feature makes vkCreateDevice fail, which used to abort the process at
+  // launch — `shaderStorageImageWriteWithoutFormat` in particular is missing on
+  // a lot of Android drivers.
   f2.features.samplerAnisotropy = features_.max_anisotropy_supported ? VK_TRUE : VK_FALSE;
   f2.features.fillModeNonSolid = VK_FALSE;
-  f2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
-  f2.features.fragmentStoresAndAtomics = VK_TRUE;
-  f2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+  f2.features.vertexPipelineStoresAndAtomics =
+      supported_features_.vertexPipelineStoresAndAtomics ? VK_TRUE : VK_FALSE;
+  f2.features.fragmentStoresAndAtomics =
+      supported_features_.fragmentStoresAndAtomics ? VK_TRUE : VK_FALSE;
+  f2.features.shaderStorageImageWriteWithoutFormat =
+      supported_features_.shaderStorageImageWriteWithoutFormat ? VK_TRUE : VK_FALSE;
 
   // --- Choose API version -------------------------------------------------
   const u32 api =
@@ -534,10 +546,34 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
   ci.enabledLayerCount = 0;
   ci.pEnabledFeatures = nullptr;
 
-  const VkResult r = vkCreateDevice(physical_device_, &ci, nullptr, &device_);
+  VkResult r = vkCreateDevice(physical_device_, &ci, nullptr, &device_);
   if (r != VK_SUCCESS) {
-    NEO_FATAL(kGfx, "vkCreateDevice failed: {} (api {}.{})", vk_result_name(r),
-              VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api));
+    // Retry with the absolute minimum feature set before giving up. Some
+    // drivers report a feature in the query and still reject it at creation.
+    NEO_WARN(kGfx, "vkCreateDevice failed ({}), retrying with core features only",
+             vk_result_name(r));
+
+    VkPhysicalDeviceFeatures2 minimal{};
+    minimal.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+    VkPhysicalDeviceVulkan12Features f12_min{};
+    f12_min.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    f12_min.timelineSemaphore = features_.timeline_semaphore ? VK_TRUE : VK_FALSE;
+
+    VkPhysicalDeviceVulkan11Features f11_min{};
+    f11_min.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    f11_min.pNext = &f12_min;
+
+    minimal.pNext = &f11_min;
+    ci.pNext = &minimal;
+    r = vkCreateDevice(physical_device_, &ci, nullptr, &device_);
+  }
+  if (r != VK_SUCCESS) {
+    // No abort: the caller backs out and the app reports the device as
+    // unsupported instead of dying on launch.
+    NEO_ERROR(kGfx, "vkCreateDevice failed permanently: {}", vk_result_name(r));
+    device_ = VK_NULL_HANDLE;
+    return;
   }
   volkLoadDevice(device_);
 

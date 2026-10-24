@@ -682,6 +682,10 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
   dd.app_name = desc.app_name;
   dd.enable_validation = desc.enable_validation;
   r->ctx_ = VulkanContext::create(dd);
+  if (!r->ctx_) {
+    NEO_ERROR(kRender, "Vulkan device creation failed — this GPU cannot run the engine");
+    return nullptr; // null, not abort: the app shows a message and exits
+  }
 
   // The renderer hard-depends on dynamic rendering and synchronization2. If
   // they are unavailable we must not create a single pipeline: calling
