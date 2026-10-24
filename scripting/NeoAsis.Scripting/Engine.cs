@@ -90,7 +90,11 @@ public static unsafe class Engine
 
         // Rent-free UTF-8 encode: most messages are short, so stack first.
         int max = Encoding.UTF8.GetMaxByteCount(message.Length) + 1;
-        byte* buffer = max <= 512 ? stackalloc byte[max] : (byte*)NativeMemory.Alloc((nuint)max);
+        // A conditional expression cannot mix stackalloc with a pointer cast,
+        // so reserve the stack buffer unconditionally and only fall back to the
+        // heap for unusually long messages.
+        byte* stackBuffer = stackalloc byte[512];
+        byte* buffer = max <= 512 ? stackBuffer : (byte*)NativeMemory.Alloc((nuint)max);
         try
         {
             fixed (char* src = message)

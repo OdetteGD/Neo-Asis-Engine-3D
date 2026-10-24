@@ -57,6 +57,7 @@ set(NEO_ENGINE_SOURCES
   engine/src/render/GltfLoader.cpp
   engine/src/render/IBLBaker.cpp
   engine/src/script/ScriptHost.cpp
+  engine/src/editor/EditorShell.cpp
   engine/src/scene/Scene.cpp)
 
 add_library(neo_engine STATIC ${NEO_ENGINE_SOURCES})

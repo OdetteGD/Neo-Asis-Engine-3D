@@ -70,7 +70,7 @@ public sealed class PulseScript : ScriptBehaviour
 
     public override void OnUpdate(float deltaTime)
     {
-        float s = 1f + Amplitude * MathF.Sin(Engine.Time * Frequency * MathF.Tau);
+        float s = 1f + Amplitude * MathF.Sin((float)Engine.Time * Frequency * MathF.Tau);
         Engine.SetScale(World, Entity, _base.X * s, _base.Y * s, _base.Z * s);
     }
 }

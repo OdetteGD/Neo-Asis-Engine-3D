@@ -28,6 +28,7 @@ extern LogCategory kRender;
 extern LogCategory kAsset;
 extern LogCategory kScript;
 extern LogCategory kPlatform;
+extern LogCategory kEditor;
 
 void set_min_level(LogLevel level) noexcept;
 void set_level(std::string_view category, LogLevel level) noexcept;

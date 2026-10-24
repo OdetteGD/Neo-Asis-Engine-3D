@@ -18,6 +18,7 @@ LogCategory kRender{"render", LogLevel::Info};
 LogCategory kAsset{"asset", LogLevel::Info};
 LogCategory kScript{"script", LogLevel::Info};
 LogCategory kPlatform{"platform", LogLevel::Info};
+LogCategory kEditor{"editor", LogLevel::Info};
 
 namespace {
 
@@ -54,13 +55,13 @@ int to_logcat(LogLevel level) {
 } // namespace
 
 void set_min_level(LogLevel level) noexcept {
-  for (LogCategory* cat : {&kCore, &kGfx, &kRender, &kAsset, &kScript, &kPlatform}) {
+  for (LogCategory* cat : {&kCore, &kGfx, &kRender, &kAsset, &kScript, &kPlatform, &kEditor}) {
     cat->min_level = level;
   }
 }
 
 void set_level(std::string_view category, LogLevel level) noexcept {
-  for (LogCategory* cat : {&kCore, &kGfx, &kRender, &kAsset, &kScript, &kPlatform}) {
+  for (LogCategory* cat : {&kCore, &kGfx, &kRender, &kAsset, &kScript, &kPlatform, &kEditor}) {
     if (category == cat->name)
       cat->min_level = level;
   }

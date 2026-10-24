@@ -76,6 +76,7 @@ public:
   [[nodiscard]] GpuAllocator& allocator() const { return *allocator_; }
 
   [[nodiscard]] const DeviceFeatures& features() const { return features_; }
+  [[nodiscard]] u32 instance_api_version() const { return instance_api_version_; }
   [[nodiscard]] const VkPhysicalDeviceProperties& properties() const { return props_; }
   [[nodiscard]] const VkPhysicalDeviceMemoryProperties& memory_properties() const {
     return mem_props_;

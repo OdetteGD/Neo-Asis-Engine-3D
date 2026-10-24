@@ -10,14 +10,12 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common/frame_data.glsl"
 
+// 112 bytes — must match neo::DrawConstants. Mali caps push constants at 128.
 layout(push_constant) uniform DrawPC {
-  mat4 model;
-  mat4 normalMatrix;
-  vec4 baseColorFactor;
-  vec4 materialParams;   // x = metallic, y = roughness, z = emissive, w = occlusion
-  vec4 uvScaleOffset;
-  uvec4 textureIndices;
-  vec4 flags;
+  mat4  model;
+  vec4  baseColorFactor;
+  vec4  materialParams;   // x = metallic, y = roughness, z = emissive, w = occlusion
+  uvec4 textureIndices;   // x = albedo, y = normal, z = alpha test, w = double sided
 } obj;
 
 // Packed vertex: position (3xf32), normal (oct-encoded 2xf32), uv (2xf32)
@@ -41,11 +39,15 @@ void main() {
   vec4 world = obj.model * vec4(position, 1.0);
   vWorldPos = world.xyz;
 
-  vec3 normal = oct_decode(nrm_oct);
-  vNormal = normalize((obj.normalMatrix * vec4(normal, 0.0)).xyz);
-  vTangent = normalize((obj.normalMatrix * vec4(normalize(cross(normal, vec3(0, 1, 0))), 0.0)).xyz);
+  // The normal matrix is derived here instead of being shipped in push
+  // constants; that is what keeps the block inside the 128-byte budget.
+  mat3 normal_matrix = transpose(inverse(mat3(obj.model)));
 
-  vUV = uv * obj.uvScaleOffset.xy + obj.uvScaleOffset.zw;
+  vec3 normal = oct_decode(nrm_oct);
+  vNormal = normalize(normal_matrix * normal);
+  vTangent = normalize(normal_matrix * normalize(cross(normal, vec3(0, 1, 0))));
+
+  vUV = uv;
 
   vec4 view_pos = frame.view * world;
   vViewDepth = -view_pos.z;

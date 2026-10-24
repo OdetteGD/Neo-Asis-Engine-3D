@@ -6,6 +6,7 @@
 //  is validated against.
 // ===========================================================================
 #include "neo/core/Log.h"
+#include "neo/editor/EditorShell.h"
 #include "neo/platform/Platform.h"
 #include "neo/render/Camera.h"
 #include "neo/render/GltfLoader.h"
@@ -169,6 +170,11 @@ int main(int argc, char** argv) {
       NEO_INFO(kScript, "No managed scripts loaded (engine-only mode)");
     }
   }
+
+  // --- Editor shell (M5 foundation) ---------------------------------------
+  EditorShell editor;
+  editor.attach(&scene);
+  editor.play(); // start in play mode so the sample behaves as before
 
   // --- Loop ----------------------------------------------------------------
   f64 last = platform->now_seconds();

@@ -82,6 +82,44 @@ vec3 evaluate_ibl(vec3 f0, float roughness, float metallic, vec3 N, vec3 V,
 }
 
 // --- Shadow lookup (cascade atlas of 4 slices) -----------------------------
+// When the lighting pass declares the atlas, this does real hardware-PCF
+// sampling. Without it, the fallback below keeps shaders self-contained.
+#if defined(NEO_SHADOW_ATLAS)
+layout(set = 2, binding = 7) uniform sampler2DShadow uShadowAtlas;
+
+float sample_shadow(vec3 world_pos, vec3 N, float NoL) {
+  int cascades = int(frame.shadowParams.x);
+  if (cascades <= 0) return 1.0;
+
+  float bias = frame.shadowParams.z;
+  float normal_bias = frame.shadowParams.w;
+  vec3 offset_pos = world_pos + N * normal_bias * 0.02;
+
+  for (int c = 0; c < 4; ++c) {
+    if (c >= cascades) break;
+    vec4 lp = frame.shadowMatrices[c] * vec4(offset_pos, 1.0);
+    vec3 ndc = lp.xyz / lp.w;
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    if (uv.x < 0.02 || uv.x > 0.98 || uv.y < 0.02 || uv.y > 0.98) continue;
+    if (ndc.z <= 0.0 || ndc.z >= 1.0) continue;
+
+    float w = 1.0 / float(cascades);
+    uv.x = uv.x * w + float(c) * w;
+
+    // 3x3 PCF through the comparison sampler.
+    vec2 texel = vec2(1.0 / float(frame.shadowParams.y), 1.0 / float(frame.shadowParams.y)) * w;
+    float lit = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        lit += texture(uShadowAtlas, vec3(uv + vec2(float(x), float(y)) * texel,
+                                          ndc.z - bias));
+      }
+    }
+    return lit / 9.0;
+  }
+  return 1.0;
+}
+#else
 float sample_shadow(vec3 world_pos, vec3 N, float NoL) {
   int cascades = int(frame.shadowParams.x);
   if (cascades <= 0) return 1.0;
@@ -108,5 +146,6 @@ float sample_shadow(vec3 world_pos, vec3 N, float NoL) {
   }
   return 1.0;
 }
+#endif // NEO_SHADOW_ATLAS
 
 #endif // NEO_PBR_GLSL

@@ -24,13 +24,10 @@ layout(location = 3) in vec3 vTangent;
 layout(location = 4) in float vViewDepth;
 
 layout(push_constant) uniform DrawPC {
-  mat4 model;
-  mat4 normalMatrix;
-  vec4 baseColorFactor;
-  vec4 materialParams;   // x = metallic, y = roughness, z = emissive, w = occlusion
-  vec4 uvScaleOffset;
-  uvec4 textureIndices;
-  vec4 flags;            // x = alpha test, y = double sided
+  mat4  model;
+  vec4  baseColorFactor;
+  vec4  materialParams;   // x = metallic, y = roughness, z = emissive, w = occlusion
+  uvec4 textureIndices;   // x = albedo, y = normal, z = alpha test, w = double sided
 } obj;
 
 layout(location = 0) out vec4 outAlbedoAO;
@@ -44,7 +41,7 @@ void main() {
   }
 
   // Alpha-tested foliage/fences: discard before any writes.
-  if (obj.flags.x > 0.5 && texel.a < 0.5) discard;
+  if (obj.textureIndices.z > 0u && texel.a < 0.5) discard;
 
   vec3 albedo = obj.baseColorFactor.rgb * texel.rgb;
 

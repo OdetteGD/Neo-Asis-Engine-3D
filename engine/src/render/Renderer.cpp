@@ -131,6 +131,7 @@ struct Renderer::Impl {
   VkDescriptorSetLayout cluster_layout = VK_NULL_HANDLE;
   VkPipelineLayout cluster_pipeline_layout = VK_NULL_HANDLE;
   VkSampler linear_sampler = VK_NULL_HANDLE;
+  VkSampler shadow_sampler = VK_NULL_HANDLE;
 
   // Shadow atlas (single 2D image, cascades as tiles)
   Image shadow{};
@@ -360,6 +361,22 @@ struct Renderer::Impl {
       sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       sci.maxLod = 1.0f;
       NEO_VK_CHECK(vkCreateSampler(dev, &sci, nullptr, &linear_sampler));
+
+      // Comparison sampler: sampler2DShadow needs compareEnable, otherwise the
+      // PCF taps return garbage.
+      VkSamplerCreateInfo ssci{};
+      ssci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+      ssci.magFilter = VK_FILTER_LINEAR;
+      ssci.minFilter = VK_FILTER_LINEAR;
+      ssci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+      ssci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+      ssci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+      ssci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+      ssci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+      ssci.compareEnable = VK_TRUE;
+      ssci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+      ssci.maxLod = 0.0f;
+      NEO_VK_CHECK(vkCreateSampler(dev, &ssci, nullptr, &shadow_sampler));
     }
 
     auto alloc = [&](VkDescriptorSetLayout layout, VkDescriptorSet& set) {
@@ -397,6 +414,22 @@ struct Renderer::Impl {
     write_sampler(scene_set, 2, gbuffer_emissive.view);
     write_sampler(scene_set, 3, depth.view);
     write_sampler(scene_set, 4, cloud_view);
+
+    // Shadow atlas needs the comparison sampler, not the linear one.
+    if (shadow.view != VK_NULL_HANDLE && shadow_sampler != VK_NULL_HANDLE) {
+      VkDescriptorImageInfo info{};
+      info.sampler = shadow_sampler;
+      info.imageView = shadow.view;
+      info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkWriteDescriptorSet w{};
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.dstSet = scene_set;
+      w.dstBinding = 7;
+      w.descriptorCount = 1;
+      w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      w.pImageInfo = &info;
+      vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+    }
 
     const VkImageView bloom_view = (bloom_views[0] != VK_NULL_HANDLE) ? bloom_views[0] : hdr.view;
     write_sampler(post_set, 0, hdr.view);
@@ -878,6 +911,32 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
 
   I.write_pass_sets();
 
+  // --- Startup diagnostics ------------------------------------------------
+  // Logged once so a device-specific failure can be diagnosed from logcat
+  // without a debugger attached.
+  {
+    const DeviceFeatures& f = r->ctx_->features();
+    const VkPhysicalDeviceProperties& p = r->ctx_->properties();
+    NEO_INFO(kRender, "=== Neo-Asis startup diagnostics ===");
+    NEO_INFO(kRender, "GPU        : {} (vendor 0x{:04x}, driver 0x{:08x})", p.deviceName,
+             p.vendorID, p.driverVersion);
+    NEO_INFO(kRender, "Vulkan API : {}.{}.{} | instance {}.{}", VK_API_VERSION_MAJOR(p.apiVersion),
+             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion),
+             VK_API_VERSION_MAJOR(r->ctx_->instance_api_version()),
+             VK_API_VERSION_MINOR(r->ctx_->instance_api_version()));
+    NEO_INFO(kRender, "Features   : dynRender={} sync2={} timeline={} bindless={} astc={}",
+             f.dynamic_rendering, f.synchronization2, f.timeline_semaphore, f.descriptor_indexing,
+             f.astc_ldr);
+    NEO_INFO(kRender, "Limits     : pushConstants={}B (mine: {}B) UBalign={} maxTex={}",
+             f.max_push_constants, static_cast<u32>(sizeof(DrawConstants)),
+             f.min_uniform_buffer_alignment, p.limits.maxImageDimension2D);
+    NEO_INFO(kRender, "Target     : {}x{} preset={} cascades={} shadow={}px", r->width_, r->height_,
+             static_cast<int>(r->quality_.preset), I.shadow_cascade_count, I.shadow_size);
+    NEO_INFO(kRender, "Memory     : {:.1f} MiB allocated, {:.0f}% of budget",
+             static_cast<f64>(r->ctx_->allocator().allocated_bytes()) / (1024.0 * 1024.0),
+             static_cast<f64>(r->ctx_->allocator().budget_fraction_used()) * 100.0);
+  }
+
   NEO_INFO(kRender, "Renderer ready: {}x{}, preset {}, {} draw pipelines", r->width_, r->height_,
            static_cast<int>(r->quality_.preset), I.pipelines->pipeline_count());
   return r;
@@ -1300,9 +1359,12 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     cmd.set_viewport(0.0f, 0.0f, static_cast<f32>(width_), static_cast<f32>(height_));
     cmd.set_scissor(0, 0, width_, height_);
 
-    if (I.p_lighting != VK_NULL_HANDLE) {
+    // Binding the lighting pipeline without the IBL set would leave set 3
+    // unbound, which is undefined behaviour (and crashed before this guard).
+    if (I.p_lighting != VK_NULL_HANDLE && I.ibl && I.ibl->ready() &&
+        I.scene_set != VK_NULL_HANDLE) {
       cmd.bind_pipeline(I.p_lighting);
-      if (I.ibl && I.ibl->ready() && I.scene_set != VK_NULL_HANDLE) {
+      {
         cmd.bind_descriptor_sets(I.lighting_pipeline_layout, 0, 1, &f.frame_set);
         const VkDescriptorSet pass_sets[2] = {I.scene_set, I.ibl->descriptor_set()};
         cmd.bind_descriptor_sets(I.lighting_pipeline_layout, 2, 2, pass_sets);

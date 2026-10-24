@@ -12,6 +12,8 @@
 
 #extension GL_GOOGLE_include_directive : require
 #include "common/frame_data.glsl"
+// Enables the real atlas-sampling path in pbr.glsl.
+#define NEO_SHADOW_ATLAS 1
 #include "common/pbr.glsl"
 #include "common/atmosphere.glsl"
 
