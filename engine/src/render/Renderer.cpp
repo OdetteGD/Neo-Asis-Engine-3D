@@ -273,6 +273,76 @@ struct Renderer::Impl {
     }
   }
 
+  // --- Cascade fitting ----------------------------------------------------
+  // Practical split scheme (logarithmic blended with uniform), then a
+  // sphere-fitted orthographic light frustum per cascade with texel snapping
+  // so the shadow map does not shimmer while the camera moves.
+  void update_cascades(const Camera& cam, const vec3& sun_dir, FrameConstants& c) {
+    const u32 count = std::max(1u, std::min(shadow_cascade_count, kMaxShadowCascades));
+    const f32 near_z = std::max(cam.desc().near_plane, 0.05f);
+    const f32 far_z = std::min(cam.desc().far_plane, 260.0f);
+    const f32 lambda = 0.72f;
+
+    const mat4 inv_proj = glm::inverse(cam.projection());
+    const mat4 cam_view = cam.view();
+    const f32 map_size = static_cast<f32>(shadow_size);
+
+    f32 split_prev = near_z;
+    for (u32 i = 0; i < count; ++i) {
+      const f32 p = static_cast<f32>(i + 1) / static_cast<f32>(count);
+      const f32 log_split = near_z * std::pow(far_z / near_z, p);
+      const f32 uniform_split = near_z + (far_z - near_z) * p;
+      const f32 split = lambda * log_split + (1.0f - lambda) * uniform_split;
+
+      // Eight frustum corners in view space for this slice.
+      vec3 corners[8];
+      u32 k = 0;
+      for (u32 side = 0; side < 2; ++side) {
+        const f32 depth = (side == 0) ? split_prev : split;
+        for (u32 y = 0; y < 2; ++y) {
+          for (u32 x = 0; x < 2; ++x) {
+            const vec4 ndc((x == 0) ? -1.0f : 1.0f, (y == 0) ? -1.0f : 1.0f, depth, 1.0f);
+            vec4 v = inv_proj * ndc;
+            corners[k++] = vec3(v) / v.w;
+          }
+        }
+      }
+
+      vec3 center(0.0f);
+      for (const vec3& pnt : corners)
+        center += pnt;
+      center /= 8.0f;
+
+      f32 radius = 0.0f;
+      for (const vec3& pnt : corners)
+        radius = std::max(radius, glm::length(pnt - center));
+      radius = std::ceil(radius * 16.0f) / 16.0f;
+
+      // Light-space basis, looking along -sun_dir.
+      const vec3 light_dir = glm::normalize(sun_dir);
+      vec3 up = (std::abs(light_dir.y) > 0.95f) ? vec3(1, 0, 0) : vec3(0, 1, 0);
+      const vec3 right = glm::normalize(glm::cross(up, light_dir));
+      up = glm::cross(light_dir, right);
+
+      // Texel snap: quantise the center in light space to whole shadow texels.
+      const f32 texel_world = (2.0f * radius) / map_size;
+      const vec3 light_center(cam_view * vec4(center, 1.0f));
+      (void)light_center;
+      vec3 snapped = center;
+      snapped.x = std::floor(snapped.x / texel_world) * texel_world;
+      snapped.y = std::floor(snapped.y / texel_world) * texel_world;
+
+      const vec3 eye = snapped - light_dir * (radius * 2.0f + 10.0f);
+      const mat4 light_view = look_at_rh(eye, snapped, up);
+      const mat4 light_proj =
+          orthographic_zo(-radius, radius, -radius, radius, 0.05f, radius * 4.0f + 20.0f);
+
+      c.shadow_matrices[i] = light_proj * light_view;
+      split_prev = split;
+    }
+    c.shadow_params = vec4(static_cast<f32>(count), map_size, 0.0009f, 1.4f);
+  }
+
   // --- Descriptor sets for the pass inputs --------------------------------
   void write_pass_sets() {
     if (depth.view == VK_NULL_HANDLE)
@@ -374,6 +444,9 @@ struct Renderer::Impl {
       frame_layout = pipelines->create_set_layout({
           {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
           {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
+          // 2: packed vertex arena, read by gbuffer.vert/shadow.vert as
+          //    `VertexBlock`. Without this binding every draw reads garbage.
+          {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
       });
     }
 
@@ -609,6 +682,19 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
   dd.app_name = desc.app_name;
   dd.enable_validation = desc.enable_validation;
   r->ctx_ = VulkanContext::create(dd);
+
+  // The renderer hard-depends on dynamic rendering and synchronization2. If
+  // they are unavailable we must not create a single pipeline: calling
+  // vkCmdBeginRendering without the enabled feature is a driver fault, which
+  // is exactly the crash-on-launch this replaced. Returning null makes the
+  // caller back out cleanly.
+  if (!r->ctx_->features().dynamic_rendering || !r->ctx_->features().synchronization2) {
+    NEO_ERROR(kRender,
+              "GPU lacks required features (dynamicRendering={}, synchronization2={}). "
+              "Vulkan 1.1 + VK_KHR_dynamic_rendering + VK_KHR_synchronization2 are required.",
+              r->ctx_->features().dynamic_rendering, r->ctx_->features().synchronization2);
+    return nullptr;
+  }
   I.ctx = r->ctx_.get();
   I.alloc = &r->ctx_->allocator();
 
@@ -740,7 +826,8 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
 
     VkDescriptorBufferInfo ubo{f.frame_ubo, 0, sizeof(FrameConstants)};
     VkDescriptorBufferInfo ssbo{f.light_buffer, 0, sizeof(GpuLight) * kMaxLights};
-    VkWriteDescriptorSet writes[2]{};
+    VkDescriptorBufferInfo vbuf{I.registry->vertex_buffer(), 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet writes[3]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = f.frame_set;
     writes[0].dstBinding = 0;
@@ -753,7 +840,13 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[1].pBufferInfo = &ssbo;
-    vkUpdateDescriptorSets(r->ctx_->device(), 2, writes, 0, nullptr);
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = f.frame_set;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &vbuf;
+    vkUpdateDescriptorSets(r->ctx_->device(), 3, writes, 0, nullptr);
   }
 
   // --- Cluster descriptor set --------------------------------------------
@@ -918,6 +1011,10 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
            static_cast<f32>(quality_.cloud_steps), static_cast<f32>(I.frame_counter % 1024));
   f.constants.cloud_wind = vec4(scene.sky().wind_direction, 0.0f, 0.0f);
   f.constants.atmosphere_scale = vec4(6360e3f, 6460e3f, scene.sky().turbidity, 0.0f);
+
+  // Shadow cascades depend on the camera and the sun, so they are fitted here,
+  // after both are known and before the constants are uploaded.
+  I.update_cascades(camera, sun_dir, f.constants);
   std::memcpy(f.frame_ubo_mapped, &f.constants, sizeof(FrameConstants));
 
   // --- Image-based lighting ----------------------------------------------
@@ -949,6 +1046,88 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
                     VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
   I.depth.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+  // =========================================================================
+  //  Pass 1a — Cascaded shadow maps (depth-only, into the atlas slices)
+  // =========================================================================
+  if (I.p_shadow != VK_NULL_HANDLE && I.shadow.view != VK_NULL_HANDLE && I.registry) {
+    cmd.label_begin(*ctx_, "Shadows", vec4(0.6f, 0.6f, 0.6f, 1.0f));
+
+    cmd.image_barrier(I.shadow.image, I.shadow.layout, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    I.shadow.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+    cmd.bind_pipeline(I.p_shadow);
+    const VkDescriptorSet shadow_sets[2] = {f.frame_set, I.registry->bindless_set()};
+    cmd.bind_descriptor_sets(I.frame_pipeline_layout, 0, 2, shadow_sets);
+
+    struct ShadowPC {
+      mat4 light_view_proj;
+      u32 cascade;
+      f32 depth_bias;
+      f32 normal_bias;
+      f32 pad;
+    };
+
+    for (u32 cascade = 0; cascade < I.shadow_cascade_count; ++cascade) {
+      VkRenderingAttachmentInfo depth_att{};
+      depth_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+      depth_att.imageView = I.shadow.view;
+      depth_att.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+      depth_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      depth_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      depth_att.clearValue.depthStencil = {1.0f, 0};
+
+      VkRenderingInfo ri{};
+      ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+      // Each cascade owns a horizontal slice of the atlas.
+      ri.renderArea = {{static_cast<i32>(cascade * I.shadow_size), 0},
+                       {I.shadow_size, I.shadow_size}};
+      ri.layerCount = 1;
+      ri.colorAttachmentCount = 0;
+      ri.pDepthAttachment = &depth_att;
+      cmd.begin_rendering(ri);
+
+      cmd.set_viewport(static_cast<f32>(cascade * I.shadow_size), 0.0f,
+                       static_cast<f32>(I.shadow_size), static_cast<f32>(I.shadow_size));
+      cmd.set_scissor(static_cast<i32>(cascade * I.shadow_size), 0, I.shadow_size, I.shadow_size);
+
+      for (EntityHandle e : I.visibility.renderables) {
+        const RenderableDesc* r = scene.renderable(e);
+        if (!r || !r->casts_shadow || !r->mesh.valid())
+          continue;
+        const Mesh* mesh = I.registry->mesh(r->mesh);
+        if (!mesh || !mesh->valid())
+          continue;
+
+        ShadowPC pc{};
+        pc.light_view_proj = f.constants.shadow_matrices[cascade] * scene.transform(e).matrix();
+        pc.cascade = cascade;
+        pc.depth_bias = f.constants.shadow_params.z;
+        pc.normal_bias = f.constants.shadow_params.w;
+        cmd.push_constants(I.frame_pipeline_layout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(pc),
+                           &pc);
+
+        cmd.bind_index_buffer(I.registry->index_buffer(),
+                              static_cast<VkDeviceSize>(mesh->first_index) * sizeof(u32));
+        cmd.draw_indexed(mesh->index_count);
+      }
+
+      cmd.end_rendering();
+    }
+
+    // Hand the atlas to the lighting pass as a sampled depth texture.
+    cmd.image_barrier(
+        I.shadow.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    I.shadow.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    cmd.label_end(*ctx_);
+  }
 
   // =========================================================================
   //  Pass 1 — G-buffer

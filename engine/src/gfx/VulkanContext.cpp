@@ -148,6 +148,10 @@ void VulkanContext::create_instance(const DeviceDesc& desc) {
   NEO_INFO(kGfx, "Vulkan loader {}.{}.{}", VK_API_VERSION_MAJOR(loader_version),
            VK_API_VERSION_MINOR(loader_version), VK_API_VERSION_PATCH(loader_version));
 
+  instance_api_version_ = VK_API_VERSION_1_2;
+  if (loader_version >= VK_API_VERSION_1_3)
+    instance_api_version_ = VK_API_VERSION_1_3;
+
   validation_enabled_ = desc.enable_validation && validation_layer_available();
   if (desc.enable_validation && !validation_enabled_) {
     NEO_WARN(kGfx, "Validation requested but VK_LAYER_KHRONOS_validation is unavailable");
@@ -161,7 +165,7 @@ void VulkanContext::create_instance(const DeviceDesc& desc) {
   app.engineVersion = VK_MAKE_VERSION(0, 1, 0);
   // 1.1 is the floor on Android; 1.2 unlocks better descriptor and shader
   // features that the modern path uses when present.
-  app.apiVersion = VK_API_VERSION_1_2;
+  app.apiVersion = instance_api_version_;
 
   // Universe of instance extensions we want.
   std::vector<const char*> extensions{
@@ -337,6 +341,43 @@ void VulkanContext::query_features() {
 
   features_.dynamic_rendering = f13.dynamicRendering == VK_TRUE;
   features_.synchronization2 = f13.synchronization2 == VK_TRUE;
+
+  // Android API 31-32 devices expose these via KHR extensions long before
+  // they report Vulkan 1.3. Query the extension feature structs too, because
+  // the renderer calls vkCmdBeginRendering / vkCmdPipelineBarrier2 on the very
+  // first frame — using them without enabling the feature is a driver fault.
+  u32 ext_count = 0;
+  vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, nullptr);
+  std::vector<VkExtensionProperties> exts(ext_count);
+  vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, exts.data());
+  auto has_ext = [&](const char* name) {
+    for (const auto& e : exts) {
+      if (std::strcmp(e.extensionName, name) == 0)
+        return true;
+    }
+    return false;
+  };
+  has_khr_dynamic_rendering_ = has_ext(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  has_khr_synchronization2_ = has_ext(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+
+  if (!features_.dynamic_rendering && has_khr_dynamic_rendering_) {
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dr{};
+    dr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+    VkPhysicalDeviceFeatures2 q{};
+    q.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    q.pNext = &dr;
+    vkGetPhysicalDeviceFeatures2(physical_device_, &q);
+    features_.dynamic_rendering = dr.dynamicRendering == VK_TRUE;
+  }
+  if (!features_.synchronization2 && has_khr_synchronization2_) {
+    VkPhysicalDeviceSynchronization2FeaturesKHR s2{};
+    s2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+    VkPhysicalDeviceFeatures2 q{};
+    q.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    q.pNext = &s2;
+    vkGetPhysicalDeviceFeatures2(physical_device_, &q);
+    features_.synchronization2 = s2.synchronization2 == VK_TRUE;
+  }
   features_.timeline_semaphore = f12.timelineSemaphore == VK_TRUE;
   features_.descriptor_indexing = f12.descriptorIndexing == VK_TRUE;
   features_.buffer_device_address = f12.bufferDeviceAddress == VK_TRUE;
@@ -373,9 +414,9 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
   };
   // Optional but valuable on mobile GPUs.
   std::vector<const char*> optional{
-      VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
-      VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME,
-      VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
+      VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,     VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME,
+      VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+      VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
   };
   for (const char* e : desc.extra_device_extensions)
     device_exts.push_back(e);
@@ -422,14 +463,32 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
   (void)total_queues;
 
   // --- Feature chain ------------------------------------------------------
+  // Core 1.3 is only worth using when the instance actually reports it;
+  // otherwise the KHR feature structs must be chained instead. Chaining both
+  // is invalid (they alias), so pick exactly one path.
+  const bool use_core_13 = instance_api_version_ >= VK_API_VERSION_1_3;
+
+  VkPhysicalDeviceDynamicRenderingFeaturesKHR dr_khr{};
+  dr_khr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+  dr_khr.dynamicRendering = features_.dynamic_rendering ? VK_TRUE : VK_FALSE;
+
+  VkPhysicalDeviceSynchronization2FeaturesKHR s2_khr{};
+  s2_khr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+  s2_khr.synchronization2 = features_.synchronization2 ? VK_TRUE : VK_FALSE;
+
   VkPhysicalDeviceVulkan13Features f13{};
   f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-  f13.dynamicRendering = features_.dynamic_rendering ? VK_TRUE : VK_FALSE;
-  f13.synchronization2 = features_.synchronization2 ? VK_TRUE : VK_FALSE;
+  if (use_core_13) {
+    f13.dynamicRendering = features_.dynamic_rendering ? VK_TRUE : VK_FALSE;
+    f13.synchronization2 = features_.synchronization2 ? VK_TRUE : VK_FALSE;
+  } else {
+    dr_khr.pNext = nullptr;
+    s2_khr.pNext = &dr_khr;
+  }
 
   VkPhysicalDeviceVulkan12Features f12{};
   f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-  f12.pNext = &f13;
+  f12.pNext = use_core_13 ? static_cast<void*>(&f13) : static_cast<void*>(&s2_khr);
   f12.timelineSemaphore = features_.timeline_semaphore ? VK_TRUE : VK_FALSE;
   f12.bufferDeviceAddress = features_.buffer_device_address ? VK_TRUE : VK_FALSE;
   f12.samplerFilterMinmax = features_.sampler_filter_minmax ? VK_TRUE : VK_FALSE;
@@ -466,7 +525,7 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
 
   VkDeviceCreateInfo ci{};
   ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  ci.pNext = &f2;
+  ci.pNext = &f2; // -> f11 -> f12 -> (f13 | KHR structs)
   ci.queueCreateInfoCount = static_cast<u32>(qcis.size());
   ci.pQueueCreateInfos = qcis.data();
   ci.enabledExtensionCount = static_cast<u32>(device_exts.size());

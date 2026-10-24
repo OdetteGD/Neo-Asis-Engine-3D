@@ -101,6 +101,20 @@ jobs:
           key: ${{ runner.os }}-android-${{ hashFiles('**/*.gradle.kts', '**/CMakeLists.txt', 'cmake/**') }}
           restore-keys: ${{ runner.os }}-android-
 
+      - name: Set up .NET (for the C# gameplay assembly)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+        continue-on-error: true
+
+      - name: Build C# scripts into the APK
+        run: |
+          if command -v dotnet >/dev/null 2>&1; then
+            ./scripting/build-scripts.sh android || echo "::warning::script build failed; APK will ship without managed scripts"
+          else
+            echo "::warning::.NET SDK unavailable; APK will ship without managed scripts"
+          fi
+
       - name: Build debug APK
         working-directory: android
         run: gradle :app:assembleDebug --stacktrace --no-daemon

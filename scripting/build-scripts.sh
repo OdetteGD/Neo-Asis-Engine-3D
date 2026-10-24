@@ -51,6 +51,21 @@ dotnet publish "$PROJECT" \
   -o "$OUT/$RID"
 
 LIB="$OUT/$RID/libneoasis_scripts.so"
+
+# Android: also place the library where Gradle packages native libs, so the
+# APK ships lib/<abi>/libneoasis_scripts.so next to libneoasis.so.
+if [ "$TARGET" = "android" ]; then
+  case "$ARCH" in
+    arm64|arm64-v8a) ABI="arm64-v8a" ;;
+    x64|x86_64)      ABI="x86_64"    ;;
+  esac
+  JNI_DIR="$ROOT/android/app/src/main/jniLibs/$ABI"
+  if [ -f "$LIB" ]; then
+    mkdir -p "$JNI_DIR"
+    cp "$LIB" "$JNI_DIR/libneoasis_scripts.so"
+    echo "==> Staged for the APK: $JNI_DIR/libneoasis_scripts.so"
+  fi
+fi
 if [ -f "$LIB" ]; then
   SIZE=$(du -h "$LIB" | cut -f1)
   echo "==> OK: $LIB ($SIZE)"

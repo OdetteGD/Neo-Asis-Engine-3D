@@ -17,6 +17,7 @@ local.properties
 .cxx/
 android/app/src/main/assets/shaders/
 android/app/build/
+android/app/src/main/jniLibs/
 android/build/
 
 # --- Engine runtime --------------------------------------------------------

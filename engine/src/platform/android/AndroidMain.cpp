@@ -42,6 +42,7 @@ struct AndroidApp {
   std::atomic<bool> running{false};
   std::atomic<bool> surface_ready{false};
   std::atomic<bool> surface_lost{false};
+  u32 renderer_attempts = 0;
 
   u32 width = 1280;
   u32 height = 720;
@@ -84,7 +85,18 @@ struct AndroidApp {
         desc.native_window = app->window;
         renderer = Renderer::create(desc);
         if (!renderer) {
-          NEO_ERROR(kPlatform, "Renderer creation failed — retrying next frame");
+          ++renderer_attempts;
+          if (renderer_attempts >= 3) {
+            // Unsupported or broken driver: stop cleanly instead of spinning
+            // and letting the OS kill us for burning CPU.
+            NEO_ERROR(kPlatform,
+                      "Renderer unavailable after {} attempts — this device cannot run the "
+                      "engine (Vulkan 1.1 + dynamic rendering + synchronization2 required)",
+                      renderer_attempts);
+            running.store(false);
+            return;
+          }
+          NEO_WARN(kPlatform, "Renderer creation failed, retrying ({}/3)", renderer_attempts);
           std::this_thread::sleep_for(std::chrono::milliseconds(250));
           continue;
         }
