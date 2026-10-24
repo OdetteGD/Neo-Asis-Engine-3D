@@ -36,6 +36,9 @@
 
 namespace neo {
 
+class ResourceRegistry;
+class IBLBaker;
+
 struct RendererDesc {
   u32 width = 1280;
   u32 height = 720;
@@ -63,9 +66,9 @@ struct QualitySettings {
 
   // --- Atmosphere --------------------------------------------------------
   bool atmosphere = true;
-  u32 atmosphere_lut_scale = 1;      // divisor for the LUT resolution
+  u32 atmosphere_lut_scale = 1; // divisor for the LUT resolution
   bool volumetric_clouds = true;
-  f32 cloud_render_scale = 0.5f;     // 0.5 => half-res raymarch
+  f32 cloud_render_scale = 0.5f; // 0.5 => half-res raymarch
   u32 cloud_steps = 48;
   i32 cloud_noise_rebind_frames = 3;
 
@@ -76,7 +79,7 @@ struct QualitySettings {
   bool fxaa = true;
 
   // --- Dynamic resolution ------------------------------------------------
-  f32 render_scale = 1.0f;           // 0.5 .. 1.0
+  f32 render_scale = 1.0f; // 0.5 .. 1.0
   bool dynamic_resolution = true;
   f32 target_frame_ms = 16.6f;
 
@@ -84,15 +87,15 @@ struct QualitySettings {
 };
 
 struct FrameStats {
-  f32  gpu_frame_ms = 0.0f;
-  f32  cpu_frame_ms = 0.0f;
-  f32  fps = 0.0f;
-  u32  draw_calls = 0;
-  u32  visible_instances = 0;
-  u32  visible_lights = 0;
-  f32  resolution_scale = 1.0f;
-  u64  gpu_memory_bytes = 0;
-  f32  gpu_budget_used = 0.0f;
+  f32 gpu_frame_ms = 0.0f;
+  f32 cpu_frame_ms = 0.0f;
+  f32 fps = 0.0f;
+  u32 draw_calls = 0;
+  u32 visible_instances = 0;
+  u32 visible_lights = 0;
+  f32 resolution_scale = 1.0f;
+  u64 gpu_memory_bytes = 0;
+  f32 gpu_budget_used = 0.0f;
 };
 
 class Scene;
@@ -113,17 +116,21 @@ public:
 
   // --- Surface changes ---------------------------------------------------
   void resize(u32 width, u32 height);
-  void on_surface_lost();     // Android: surface destroyed, drop size-dependent targets
-  void on_surface_recreated();// Android: rebuild size-dependent targets
+  void on_surface_lost();      // Android: surface destroyed, drop size-dependent targets
+  void on_surface_recreated(); // Android: rebuild size-dependent targets
 
   // --- Settings ----------------------------------------------------------
   void set_quality(QualitySettings settings);
   [[nodiscard]] const QualitySettings& quality() const { return quality_; }
-  void reload_shaders();      // hot reload for development on desktop
+  void reload_shaders(); // hot reload for development on desktop
 
   // --- Introspection -----------------------------------------------------
   [[nodiscard]] const FrameStats& stats() const { return stats_; }
   [[nodiscard]] VulkanContext& context() { return *ctx_; }
+  // Mesh/material/texture storage. Gameplay code adds geometry here; the
+  // renderer uploads it on the next frame.
+  [[nodiscard]] ResourceRegistry& resources();
+  [[nodiscard]] IBLBaker& ibl_baker();
   [[nodiscard]] Swapchain& swapchain() { return *swapchain_; }
   [[nodiscard]] u32 width() const { return width_; }
   [[nodiscard]] u32 height() const { return height_; }

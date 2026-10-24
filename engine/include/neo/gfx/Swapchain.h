@@ -26,10 +26,9 @@ struct SwapchainDesc {
   u32 width = 1280;
   u32 height = 720;
   bool vsync = true;
-  VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   VkImageUsageFlags requested_extra = 0;
-  u32 preferred_image_count = 3;  // triple buffering: the mobile sweet spot
+  u32 preferred_image_count = 3; // triple buffering: the mobile sweet spot
 };
 
 class Swapchain {

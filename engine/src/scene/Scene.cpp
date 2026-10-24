@@ -26,12 +26,12 @@ EntityHandle Scene::create_entity(std::string_view name) {
 }
 
 void Scene::destroy_entity(EntityHandle e) {
-  if (!e.valid() || e.index() >= alive_.size()) return;
+  if (!e.valid() || e.index() >= alive_.size())
+    return;
   alive_[e.index()] = false;
-  renderable_ids_.erase(
-      std::remove_if(renderable_ids_.begin(), renderable_ids_.end(),
-                     [&](EntityHandle h) { return h == e; }),
-      renderable_ids_.end());
+  renderable_ids_.erase(std::remove_if(renderable_ids_.begin(), renderable_ids_.end(),
+                                       [&](EntityHandle h) { return h == e; }),
+                        renderable_ids_.end());
 }
 
 EntityHandle Scene::add_renderable(const RenderableDesc& desc) {
@@ -44,7 +44,8 @@ EntityHandle Scene::add_renderable(const RenderableDesc& desc) {
 
 RenderableDesc* Scene::renderable(EntityHandle e) {
   for (usize i = 0; i < renderable_ids_.size(); ++i) {
-    if (renderable_ids_[i] == e) return &renderables_[i];
+    if (renderable_ids_[i] == e)
+      return &renderables_[i];
   }
   return nullptr;
 }
@@ -83,7 +84,8 @@ const Transform& Scene::transform(EntityHandle e) const {
 
 const mat4& Scene::world_matrix(EntityHandle e) const {
   static const mat4 identity(1.0f);
-  if (!e.valid() || e.index() >= world_matrices_.size()) return identity;
+  if (!e.valid() || e.index() >= world_matrices_.size())
+    return identity;
   return world_matrices_[e.index()];
 }
 
@@ -91,8 +93,8 @@ vec3 Scene::sun_direction() const {
   const f32 el = sky_.elevation_degrees * kDegToRad;
   const f32 az = sky_.azimuth_degrees * kDegToRad;
   // Azimuth 0 = +Z, increasing towards +X. Elevation above the horizon.
-  return glm::normalize(vec3(std::cos(el) * std::sin(az), std::sin(el),
-                             std::cos(el) * std::cos(az)));
+  return glm::normalize(
+      vec3(std::cos(el) * std::sin(az), std::sin(el), std::cos(el) * std::cos(az)));
 }
 
 void Scene::cull(const Frustum& frustum, Visibility& out) const {
@@ -105,7 +107,8 @@ void Scene::cull(const Frustum& frustum, Visibility& out) const {
   // conservative proxy until Mesh uploads real bounds.
   for (usize i = 0; i < renderable_ids_.size(); ++i) {
     const RenderableDesc& r = renderables_[i];
-    if (!r.visible) continue;
+    if (!r.visible)
+      continue;
     const vec3 center = r.transform.position;
     const f32 radius = std::max({r.transform.scale.x, r.transform.scale.y, r.transform.scale.z});
     if (frustum.intersects_sphere(center, radius * 0.5f + 0.001f)) {
@@ -118,8 +121,7 @@ void Scene::cull(const Frustum& frustum, Visibility& out) const {
   // Lights: point/spot culled by radius, directional always visible.
   for (usize i = 0; i < lights_.size(); ++i) {
     const LightDesc& l = lights_[i];
-    if (l.type == LightType::Directional ||
-        frustum.intersects_sphere(l.position, l.range)) {
+    if (l.type == LightType::Directional || frustum.intersects_sphere(l.position, l.range)) {
       out.light_indices.push_back(static_cast<u32>(i));
     }
   }
@@ -131,7 +133,8 @@ void Scene::pack_lights(std::vector<GpuLight>& out) const {
   for (const LightDesc& l : lights_) {
     GpuLight g{};
     g.position_range = vec4(l.position, l.range);
-    g.direction_angle = vec4(glm::normalize(l.direction), std::cos(l.outer_cone_degrees * kDegToRad));
+    g.direction_angle =
+        vec4(glm::normalize(l.direction), std::cos(l.outer_cone_degrees * kDegToRad));
     g.color_intensity = vec4(l.color, l.intensity);
     g.params = vec4(static_cast<f32>(l.type), l.casts_shadow ? 0.0f : -1.0f,
                     std::cos(l.inner_cone_degrees * kDegToRad), 0.0f);

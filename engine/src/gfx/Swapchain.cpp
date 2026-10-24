@@ -8,18 +8,21 @@ namespace neo {
 
 std::unique_ptr<Swapchain> Swapchain::create(VulkanContext& ctx, const SwapchainDesc& desc) {
   auto sc = std::unique_ptr<Swapchain>(new Swapchain());
-  if (!sc->create_internal(ctx, desc)) return nullptr;
+  if (!sc->create_internal(ctx, desc))
+    return nullptr;
   return sc;
 }
 
 Swapchain::~Swapchain() {
   destroy_views();
-  if (swapchain_ != VK_NULL_HANDLE) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
+  if (swapchain_ != VK_NULL_HANDLE)
+    vkDestroySwapchainKHR(device_, swapchain_, nullptr);
 }
 
 void Swapchain::destroy_views() {
   for (VkImageView v : views_) {
-    if (v != VK_NULL_HANDLE) vkDestroyImageView(device_, v, nullptr);
+    if (v != VK_NULL_HANDLE)
+      vkDestroyImageView(device_, v, nullptr);
   }
   views_.clear();
   images_.clear();
@@ -54,8 +57,8 @@ bool Swapchain::create_internal(VulkanContext& ctx, const SwapchainDesc& desc) {
   if (!desc.vsync) {
     if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.end()) {
       present_mode_ = VK_PRESENT_MODE_MAILBOX_KHR;
-    } else if (std::find(modes.begin(), modes.end(),
-                         VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end()) {
+    } else if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) !=
+               modes.end()) {
       present_mode_ = VK_PRESENT_MODE_IMMEDIATE_KHR;
     }
   }
@@ -63,7 +66,8 @@ bool Swapchain::create_internal(VulkanContext& ctx, const SwapchainDesc& desc) {
   extent_ = caps.currentExtent;
   if (extent_.width == UINT32_MAX || caps.currentExtent.width == 0xFFFFFFFFu) {
     extent_.width = std::clamp(desc.width, caps.minImageExtent.width, caps.maxImageExtent.width);
-    extent_.height = std::clamp(desc.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+    extent_.height =
+        std::clamp(desc.height, caps.minImageExtent.height, caps.maxImageExtent.height);
   }
 
   transform_ = caps.currentTransform;
@@ -79,7 +83,8 @@ bool Swapchain::create_internal(VulkanContext& ctx, const SwapchainDesc& desc) {
   }
 
   u32 desired = std::max(desc.preferred_image_count, caps.minImageCount);
-  if (caps.maxImageCount > 0) desired = std::min(desired, caps.maxImageCount);
+  if (caps.maxImageCount > 0)
+    desired = std::min(desired, caps.maxImageCount);
   min_image_count_ = desired;
 
   VkImageUsageFlags usage = desc.usage;
@@ -169,15 +174,14 @@ bool Swapchain::rebuild(u32 width, u32 height, bool vsync) {
 }
 
 bool Swapchain::acquire(VkSemaphore image_available, u32* out_image_index) {
-  const VkResult r =
-      vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_available, VK_NULL_HANDLE,
-                            out_image_index);
+  const VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_available,
+                                           VK_NULL_HANDLE, out_image_index);
   if (r == VK_ERROR_OUT_OF_DATE_KHR) {
     needs_rebuild_ = true;
     return false;
   }
   if (r == VK_SUBOPTIMAL_KHR) {
-    needs_rebuild_ = true;  // still presentable this frame
+    needs_rebuild_ = true; // still presentable this frame
   } else if (r != VK_SUCCESS) {
     NEO_ERROR(kGfx, "vkAcquireNextImageKHR failed: {}", vk_result_name(r));
     return false;
@@ -211,20 +215,26 @@ bool Swapchain::present(VkSemaphore render_finished, u32 image_index) {
 f32 Swapchain::rotation_matrix_element(u32 row, u32 col) const {
   // Row-major 2x2 clip-space rotation for the pre-rotation transform.
   switch (transform_) {
-    case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:  // { 0, -1 }, { 1, 0 }
-      if (row == 0 && col == 0) return 0.0f;
-      if (row == 0 && col == 1) return 1.0f;
-      if (row == 1 && col == 0) return -1.0f;
+  case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR: // { 0, -1 }, { 1, 0 }
+    if (row == 0 && col == 0)
       return 0.0f;
-    case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
-      return (row == col) ? -1.0f : 0.0f;
-    case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:  // { 0, 1 }, { -1, 0 }
-      if (row == 0 && col == 0) return 0.0f;
-      if (row == 0 && col == 1) return -1.0f;
-      if (row == 1 && col == 0) return 1.0f;
+    if (row == 0 && col == 1)
+      return 1.0f;
+    if (row == 1 && col == 0)
+      return -1.0f;
+    return 0.0f;
+  case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
+    return (row == col) ? -1.0f : 0.0f;
+  case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR: // { 0, 1 }, { -1, 0 }
+    if (row == 0 && col == 0)
       return 0.0f;
-    default:
-      return (row == col) ? 1.0f : 0.0f;
+    if (row == 0 && col == 1)
+      return -1.0f;
+    if (row == 1 && col == 0)
+      return 1.0f;
+    return 0.0f;
+  default:
+    return (row == col) ? 1.0f : 0.0f;
   }
 }
 

@@ -1,0 +1,61 @@
+#version 450
+// ===========================================================================
+//  sky_capture.comp — evaluates the procedural atmosphere for every direction
+//  of a cubemap face and writes HDR radiance.
+//
+//  This is the source of truth for the environment: IBL, the sky pass and the
+//  cloud lighting all come from the same model, so they cannot disagree.
+// ===========================================================================
+
+#extension GL_GOOGLE_include_directive : require
+#include "common/frame_data.glsl"
+#include "common/atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0, rgba16f) uniform imageCube outEnv;
+
+layout(push_constant) uniform CapturePC {
+  vec4 params;   // x = face size, y = mip level, z = steps, w = spare
+} pc;
+
+// Direction for a texel on cube face `face`, matching Vulkan's cube layout:
+//   +X, -X, +Y, -Y, +Z, -Z
+vec3 cube_direction(ivec2 px, int face, float size) {
+  vec2 uv = (vec2(px) + 0.5) / size * 2.0 - 1.0;
+  vec3 dir;
+  switch (face) {
+    case 0: dir = vec3(1.0, -uv.y, -uv.x); break;  // +X
+    case 1: dir = vec3(-1.0, -uv.y, uv.x); break;  // -X
+    case 2: dir = vec3(uv.x, 1.0, uv.y); break;    // +Y
+    case 3: dir = vec3(uv.x, -1.0, -uv.y); break;  // -Y
+    case 4: dir = vec3(uv.x, -uv.y, 1.0); break;   // +Z
+    default: dir = vec3(-uv.x, -uv.y, -1.0); break; // -Z
+  }
+  return normalize(dir);
+}
+
+void main() {
+  const ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  const int face = int(gl_GlobalInvocationID.z);
+  const int size = int(pc.params.x);
+  if (px.x >= size || px.y >= size || face >= 6) return;
+
+  const vec3 dir = cube_direction(px, face, pc.params.x);
+
+  // The bake runs once, so we can afford a dense march here even though the
+  // realtime sky pass uses far fewer steps.
+  float transmittance = 1.0;
+  vec3 radiance = atmosphere_scattering(vec3(0.0), dir, int(pc.params.z), transmittance);
+  radiance += sun_disk(dir) * transmittance;
+
+  // Ground hemisphere: a dark albedo so the diffuse IBL has bounce light from
+  // below instead of a black void.
+  if (dir.y < 0.0) {
+    vec3 sky_above = atmosphere_scattering(vec3(0.0), normalize(vec3(dir.x, 0.05, dir.z)), 8,
+                                           transmittance);
+    radiance = mix(radiance, sky_above * 0.12, smoothstep(0.0, -0.25, dir.y));
+  }
+
+  imageStore(outEnv, ivec3(px, face), vec4(radiance, 1.0));
+}

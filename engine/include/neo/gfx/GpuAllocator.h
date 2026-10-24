@@ -13,8 +13,8 @@
 
 #include "neo/core/Types.h"
 
-#include <volk.h>
 #include <vk_mem_alloc.h>
+#include <volk.h>
 
 #include <memory>
 #include <string_view>
@@ -31,9 +31,9 @@ struct GpuAllocatorDesc {
 
 // Memory classes the renderer asks for, mapped onto VMA usage.
 enum class MemoryClass : u8 {
-  DeviceLocal,       // GPU-only, fastest (textures, vertex data, render targets)
-  DeviceLocalHostVisible,  // Resizable BAR / UMA (mobile) upload targets
-  Upload,            // Host-visible staging, mapped persistently
+  DeviceLocal,            // GPU-only, fastest (textures, vertex data, render targets)
+  DeviceLocalHostVisible, // Resizable BAR / UMA (mobile) upload targets
+  Upload,                 // Host-visible staging, mapped persistently
   Readback,
 };
 
@@ -77,7 +77,7 @@ public:
   // --- Stats -------------------------------------------------------------
   [[nodiscard]] u64 allocated_bytes() const;
   [[nodiscard]] u64 peak_bytes() const { return peak_bytes_; }
-  [[nodiscard]] f32 budget_fraction_used() const;  // 0..1, uses VK_EXT_memory_budget
+  [[nodiscard]] f32 budget_fraction_used() const; // 0..1, uses VK_EXT_memory_budget
 
   void log_stats(std::string_view label) const;
 

@@ -118,21 +118,41 @@ constant-buffer layout contract.
 | Desktop | Linux with a Vulkan 1.1 driver, X11 or Wayland |
 | Toolchain | CMake 3.24+, C++20 compiler, glslang, JDK 17 + NDK 26 for Android |
 
+## Scripting
+
+Gameplay is written in C# and compiled ahead of time with NativeAOT into a
+shared library the engine `dlopen`s:
+
+```bash
+./scripting/build-scripts.sh desktop    # or: android
+```
+
+```csharp
+public sealed class SpinScript : ScriptBehaviour
+{
+    public float Speed { get; init; } = 1f;
+    public override void OnUpdate(float dt) => RotateY(Speed * dt);
+}
+```
+
+No Mono, no JIT, ~2 MB, single-digit-millisecond startup. See
+[docs/SCRIPTING.md](docs/SCRIPTING.md).
+
 ## Engine status
 
-Honest state of the tree — this is an actively built project, not a finished
-product:
+Honest state of the tree — an actively built project, not a finished product:
 
 - ✅ Vulkan device/swapchain/allocator/pipeline infrastructure
 - ✅ Deferred G-buffer, PBR lighting, CSM plumbing, sky + clouds shaders
+- ✅ Mesh and material registries: glTF/GLB import, bindless textures, real
+      indexed draws from shared vertex/index arenas
+- ✅ IBL baker: sky capture → irradiance → GGX prefilter → BRDF LUT, re-baked
+      when the sun drifts
 - ✅ Android build, lifecycle, and APK CI
-- 🚧 Mesh/material registry and glTF import (vertex buffers are wired; upload
-      from `cgltf` is the next milestone)
-- 🚧 IBL baker execution path (shaders and layouts exist; the bake job graph is
-      not yet driven each frame)
-- 🚧 Clustered light assignment (the shader loop is flat; cluster grid buffers
-      are specified in `FrameData.h` but not populated)
-- 🚧 Editor UI and C# (.NET 10) scripting bridge
+- ✅ C# scripting: versioned host ABI, NativeAOT assembly, desktop hot reload
+- 🚧 Clustered light assignment (the shader loop is still a flat bounded list;
+      the cluster grid is specified in `FrameData.h` but not populated)
+- 🚧 Editor UI and play-in-editor
 - 📋 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan
 
 ## License

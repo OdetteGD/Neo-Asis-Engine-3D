@@ -31,13 +31,10 @@ public:
   void end() const { NEO_VK_CHECK(vkEndCommandBuffer(cmd_)); }
 
   // --- Dynamic rendering (no VkRenderPass objects anywhere) --------------
-  void begin_rendering(const VkRenderingInfo& info) const {
-    vkCmdBeginRendering(cmd_, &info);
-  }
+  void begin_rendering(const VkRenderingInfo& info) const { vkCmdBeginRendering(cmd_, &info); }
   void end_rendering() const { vkCmdEndRendering(cmd_); }
 
-  void set_viewport(f32 x, f32 y, f32 w, f32 h, f32 min_depth = 0.0f,
-                    f32 max_depth = 1.0f) const {
+  void set_viewport(f32 x, f32 y, f32 w, f32 h, f32 min_depth = 0.0f, f32 max_depth = 1.0f) const {
     const VkViewport vp{x, y, w, h, min_depth, max_depth};
     vkCmdSetViewport(cmd_, 0, 1, &vp);
   }
@@ -47,8 +44,12 @@ public:
   }
 
   // --- Pipelines / descriptors -------------------------------------------
-  void bind_pipeline(VkPipeline pipeline) const { vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline); }
-  void bind_compute(VkPipeline pipeline) const { vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
+  void bind_pipeline(VkPipeline pipeline) const {
+    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  }
+  void bind_compute(VkPipeline pipeline) const {
+    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  }
 
   void bind_vertex_buffer(VkBuffer buffer, VkDeviceSize offset = 0) const {
     vkCmdBindVertexBuffers(cmd_, 0, 1, &buffer, &offset);
@@ -93,9 +94,9 @@ public:
   void image_barrier(VkImage image, VkImageLayout from, VkImageLayout to,
                      VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
                      VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
-                     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                     u32 base_mip = 0, u32 mip_count = VK_REMAINING_MIP_LEVELS,
-                     u32 base_layer = 0, u32 layer_count = VK_REMAINING_ARRAY_LAYERS) const {
+                     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, u32 base_mip = 0,
+                     u32 mip_count = VK_REMAINING_MIP_LEVELS, u32 base_layer = 0,
+                     u32 layer_count = VK_REMAINING_ARRAY_LAYERS) const {
     VkImageMemoryBarrier2 b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.srcStageMask = src_stage;

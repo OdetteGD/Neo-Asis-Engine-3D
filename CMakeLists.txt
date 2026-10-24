@@ -53,6 +53,10 @@ set(NEO_ENGINE_SOURCES
   engine/src/gfx/PipelineCache.cpp
   engine/src/render/Renderer.cpp
   engine/src/render/Camera.cpp
+  engine/src/render/Resources.cpp
+  engine/src/render/GltfLoader.cpp
+  engine/src/render/IBLBaker.cpp
+  engine/src/script/ScriptHost.cpp
   engine/src/scene/Scene.cpp)
 
 add_library(neo_engine STATIC ${NEO_ENGINE_SOURCES})
@@ -79,17 +83,52 @@ if(NEO_PLATFORM_ANDROID)
   target_compile_definitions(neo_engine PUBLIC NEO_PLATFORM_ANDROID=1 VK_USE_PLATFORM_ANDROID_KHR)
 else()
   target_compile_definitions(neo_engine PUBLIC NEO_PLATFORM_DESKTOP=1)
+  # The Vulkan surface structs for X11/Wayland only exist when the matching
+  # VK_USE_PLATFORM_* macro is defined before vulkan headers are included.
+  if(UNIX)
+    find_package(X11 QUIET)
+    if(X11_FOUND)
+      # volk only *defines* the Xlib entry points when the macro is set on
+      # volk itself, not just on the consumer.
+      target_compile_definitions(neo_engine PUBLIC VK_USE_PLATFORM_XLIB_KHR)
+      target_include_directories(neo_engine PUBLIC ${X11_INCLUDE_DIR})
+      if(TARGET volk)
+        target_compile_definitions(volk PUBLIC VK_USE_PLATFORM_XLIB_KHR)
+      endif()
+    endif()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(WAYLAND_CLIENT QUIET wayland-client)
+      if(WAYLAND_CLIENT_FOUND)
+        target_compile_definitions(neo_engine PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
+        target_include_directories(neo_engine PUBLIC ${WAYLAND_CLIENT_INCLUDE_DIRS})
+        if(TARGET volk)
+          target_compile_definitions(volk PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
+        endif()
+      endif()
+    endif()
+  endif()
 endif()
 
 target_link_libraries(neo_engine
   PUBLIC
     volk::volk
     glm::glm
-  PRIVATE
-    Vulkan::Headers
+    fmt::fmt
+    # Public headers expose VmaAllocation (Resources.h, IBLBaker.h).
     GPUOpen::VulkanMemoryAllocator
+    Vulkan::Headers
+  PRIVATE
     cgltf::cgltf
+    fmt::fmt
     ${CMAKE_DL_LIBS})
+
+# stb_image is header-only; GltfLoader.cpp defines the implementation.
+if(DEFINED stb_SOURCE_DIR)
+  target_include_directories(neo_engine PRIVATE ${stb_SOURCE_DIR})
+elseif(DEFINED stb_src_SOURCE_DIR)
+  target_include_directories(neo_engine PRIVATE ${stb_src_SOURCE_DIR})
+endif()
 
 # Desktop windowing: the platform layer needs a window + native handle.
 if(NOT NEO_PLATFORM_ANDROID)

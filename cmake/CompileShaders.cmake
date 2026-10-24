@@ -20,9 +20,13 @@ function(neo_compile_shaders TARGET)
     return()
   endif()
 
+  # Only real stages are compiled. `common/*.glsl` are include-only headers
+  # (no #version, no main) and glslang rejects them as standalone inputs.
   file(GLOB_RECURSE SHADER_FILES CONFIGURE_DEPENDS
-       "${ARG_SOURCE_DIR}/*.glsl" "${ARG_SOURCE_DIR}/*.vert"
-       "${ARG_SOURCE_DIR}/*.frag" "${ARG_SOURCE_DIR}/*.comp")
+       "${ARG_SOURCE_DIR}/*.vert"
+       "${ARG_SOURCE_DIR}/*.frag"
+       "${ARG_SOURCE_DIR}/*.comp")
+  list(FILTER SHADER_FILES EXCLUDE REGEX "/common/")
 
   set(SPV_OUTPUTS)
   foreach(SHADER ${SHADER_FILES})
@@ -34,9 +38,12 @@ function(neo_compile_shaders TARGET)
     add_custom_command(
       OUTPUT  "${SPV}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_DIR}"
+      # NOTE: no manual quotes around the -I value. VERBATIM escapes them
+      # literally, which makes glslang see a path with quotes in it and fail
+      # every #include with a confusing usage dump.
       COMMAND ${GLSLANG_VALIDATOR}
               --target-env vulkan1.2 -Os
-              -I"${ARG_SOURCE_DIR}"
+              -I${ARG_SOURCE_DIR}
               -o "${SPV}" "${SHADER}"
       DEPENDS "${SHADER}"
       COMMENT "GLSL  ${REL}"

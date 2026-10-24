@@ -14,6 +14,7 @@
 #pragma once
 
 #include "neo/core/Log.h"
+#include "neo/core/Math.h"
 #include "neo/core/Types.h"
 
 #include <volk.h>
@@ -89,8 +90,8 @@ public:
   // Picks the best swapchain format preferring low-bandwidth mobile formats
   // (RGB10A2, then BGRA8 sRGB) and ensuring the renderer's HDR pipeline can
   // present correctly.
-  [[nodiscard]] VkSurfaceFormatKHR choose_surface_format(
-      const std::vector<VkSurfaceFormatKHR>& available) const;
+  [[nodiscard]] VkSurfaceFormatKHR
+  choose_surface_format(const std::vector<VkSurfaceFormatKHR>& available) const;
 
   [[nodiscard]] std::optional<u32> find_memory_type(u32 type_bits,
                                                     VkMemoryPropertyFlags flags) const;
@@ -133,13 +134,13 @@ private:
 
 } // namespace neo
 
-#define NEO_VK_CHECK(expr)                                                      \
-  do {                                                                          \
-    const VkResult neo_vk_result_ = (expr);                                     \
-    if (neo_vk_result_ != VK_SUCCESS) [[unlikely]] {                            \
-      NEO_FATAL(kGfx, "Vulkan call failed: {} -> {} ({}:{})", #expr,             \
-                ::neo::vk_result_name(neo_vk_result_), __FILE__, __LINE__);     \
-    }                                                                           \
+#define NEO_VK_CHECK(expr)                                                                         \
+  do {                                                                                             \
+    const VkResult neo_vk_result_ = (expr);                                                        \
+    if (neo_vk_result_ != VK_SUCCESS) [[unlikely]] {                                               \
+      NEO_FATAL(kGfx, "Vulkan call failed: {} -> {} ({}:{})", #expr,                               \
+                ::neo::vk_result_name(neo_vk_result_), __FILE__, __LINE__);                        \
+    }                                                                                              \
   } while (0)
 
 namespace neo {

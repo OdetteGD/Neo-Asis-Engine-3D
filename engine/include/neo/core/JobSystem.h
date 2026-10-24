@@ -26,7 +26,7 @@ using JobFn = void (*)(void* data);
 struct Job {
   JobFn fn = nullptr;
   void* data = nullptr;
-  u64   payload = 0;   // optional inline scalar argument
+  u64 payload = 0; // optional inline scalar argument
 };
 
 class JobCounter {
@@ -56,8 +56,8 @@ private:
 class JobSystem {
 public:
   struct Config {
-    u32 worker_count = 0;          // 0 => auto-detect (hw - 1), clamped [1, 8]
-    u32 deque_capacity = 4096;     // per worker
+    u32 worker_count = 0;      // 0 => auto-detect (hw - 1), clamped [1, 8]
+    u32 deque_capacity = 4096; // per worker
   };
 
   JobSystem();

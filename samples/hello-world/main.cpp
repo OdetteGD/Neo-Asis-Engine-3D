@@ -8,8 +8,11 @@
 #include "neo/core/Log.h"
 #include "neo/platform/Platform.h"
 #include "neo/render/Camera.h"
+#include "neo/render/GltfLoader.h"
 #include "neo/render/Renderer.h"
+#include "neo/render/Resources.h"
 #include "neo/scene/Scene.h"
+#include "neo/script/ScriptHost.h"
 
 #include <cstdio>
 #include <vector>
@@ -40,12 +43,18 @@ public:
 
     const f32 speed = (input.is_down(Key::Shift) ? 24.0f : 8.0f) * dt;
     vec3 move{0.0f};
-    if (input.is_down(Key::W)) move += camera.forward();
-    if (input.is_down(Key::S)) move -= camera.forward();
-    if (input.is_down(Key::D)) move += camera.right();
-    if (input.is_down(Key::A)) move -= camera.right();
-    if (input.is_down(Key::E)) move += vec3(0, 1, 0);
-    if (input.is_down(Key::Q)) move -= vec3(0, 1, 0);
+    if (input.is_down(Key::W))
+      move += camera.forward();
+    if (input.is_down(Key::S))
+      move -= camera.forward();
+    if (input.is_down(Key::D))
+      move += camera.right();
+    if (input.is_down(Key::A))
+      move -= camera.right();
+    if (input.is_down(Key::E))
+      move += vec3(0, 1, 0);
+    if (input.is_down(Key::Q))
+      move -= vec3(0, 1, 0);
 
     if (glm::length(move) > 0.0f) {
       camera.set_position(camera.position() + glm::normalize(move) * speed);
@@ -58,8 +67,8 @@ public:
   }
 
 private:
-  f32 yaw_ = 0.0f;    // degrees
-  f32 pitch_ = 0.0f;  // degrees
+  f32 yaw_ = 0.0f;   // degrees
+  f32 pitch_ = 0.0f; // degrees
 };
 
 } // namespace
@@ -99,7 +108,8 @@ int main(int argc, char** argv) {
   }
 
   platform->set_event_callback([&](AppEvent event, u32 w, u32 h) {
-    if (event == AppEvent::Resize) renderer->resize(w, h);
+    if (event == AppEvent::Resize)
+      renderer->resize(w, h);
   });
 
   // --- Scene ---------------------------------------------------------------
@@ -129,21 +139,36 @@ int main(int argc, char** argv) {
   for (int i = 0; i < 9; ++i) {
     RenderableDesc r{};
     const f32 angle = static_cast<f32>(i) * kTau / 9.0f;
-    r.transform.position = vec3(std::cos(angle) * 3.0f, 0.5f + 0.3f * (i % 3), std::sin(angle) * 3.0f);
+    r.transform.position =
+        vec3(std::cos(angle) * 3.0f, 0.5f + 0.3f * (i % 3), std::sin(angle) * 3.0f);
     r.transform.scale = vec3(0.6f);
     const EntityHandle e = scene.add_renderable(r);
     spinners.push_back(Spinner{e, 0.4f + 0.1f * static_cast<f32>(i), vec3(0, 1, 0)});
   }
 
   Camera camera;
-  camera.set_perspective(55.0f, static_cast<f32>(platform->width()) /
-                                     static_cast<f32>(platform->height()),
+  camera.set_perspective(55.0f,
+                         static_cast<f32>(platform->width()) / static_cast<f32>(platform->height()),
                          0.1f, 2000.0f);
   camera.set_position(vec3(0.0f, 3.5f, 9.0f));
   camera.look_at(vec3(0.0f, 3.5f, 9.0f), vec3(0.0f, 1.0f, 0.0f));
 
   FlyCamera fly;
   fly.set_angles(0.0f, -12.0f);
+
+  // --- Managed gameplay scripts (optional) --------------------------------
+  // The assembly is loaded at runtime; if it is absent the engine runs exactly
+  // as before. Build it with ./scripting/build-scripts.sh desktop.
+  std::unique_ptr<ScriptHost> scripts;
+  {
+    ScriptDesc sd{};
+    sd.library_path = "libneoasis_scripts.so";
+    sd.hot_reload = true;
+    scripts = ScriptHost::create(sd);
+    if (!scripts->load(scene)) {
+      NEO_INFO(kScript, "No managed scripts loaded (engine-only mode)");
+    }
+  }
 
   // --- Loop ----------------------------------------------------------------
   f64 last = platform->now_seconds();
@@ -163,7 +188,8 @@ int main(int argc, char** argv) {
       t.rotation = glm::angleAxis(dt * s.speed, s.axis) * t.rotation;
     }
 
-    if (!renderer->begin_frame()) continue;
+    if (!renderer->begin_frame())
+      continue;
     renderer->render(scene, camera, dt);
     renderer->end_frame();
     platform->present_frame();
@@ -182,6 +208,8 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (scripts)
+    scripts->unload(scene);
   renderer.reset();
   return 0;
 }

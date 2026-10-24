@@ -8,8 +8,8 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
-layout(set = 1, binding = 0) uniform sampler2D uSource;   // smaller mip
-layout(set = 1, binding = 1) uniform sampler2D uCurrent;  // same-size mip
+layout(set = 2, binding = 0) uniform sampler2D uSource;   // smaller mip
+layout(set = 2, binding = 1) uniform sampler2D uCurrent;  // same-size mip
 
 layout(push_constant) uniform BloomPC {
   vec4 texel;

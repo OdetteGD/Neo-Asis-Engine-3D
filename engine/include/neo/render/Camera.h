@@ -45,9 +45,7 @@ public:
   [[nodiscard]] mat4 view() const;
   [[nodiscard]] mat4 projection() const;
   [[nodiscard]] mat4 view_projection() const { return projection() * view(); }
-  [[nodiscard]] mat4 inverse_view_projection() const {
-    return glm::inverse(view_projection());
-  }
+  [[nodiscard]] mat4 inverse_view_projection() const { return glm::inverse(view_projection()); }
   [[nodiscard]] Frustum frustum() const;
 
   [[nodiscard]] const CameraDesc& desc() const { return desc_; }

@@ -1,0 +1,75 @@
+#version 450
+// ===========================================================================
+//  irradiance.comp — diffuse IBL.
+//
+//  Cosine-weighted convolution of the environment cube into a small cube map.
+//  This is the classic Lambertian integral:
+//
+//      E(n) = ∫ L(w) (n·w) dw
+//
+//  Sampled with a fixed tangent-space hemisphere grid rather than importance
+//  sampling: the target is 32x32, so the analytic grid converges visually and
+//  avoids per-texel random noise.
+// ===========================================================================
+
+#extension GL_GOOGLE_include_directive : require
+#include "common/frame_data.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform samplerCube uEnvironment;
+layout(set = 1, binding = 1, rgba16f) uniform imageCube outIrradiance;
+
+layout(push_constant) uniform IrradiancePC {
+  vec4 params;   // x = target size, y = source size, z = sample delta, w = spare
+} pc;
+
+const float PI = 3.14159265359;
+
+vec3 cube_direction(ivec2 px, int face, float size) {
+  vec2 uv = (vec2(px) + 0.5) / size * 2.0 - 1.0;
+  vec3 dir;
+  switch (face) {
+    case 0: dir = vec3(1.0, -uv.y, -uv.x); break;
+    case 1: dir = vec3(-1.0, -uv.y, uv.x); break;
+    case 2: dir = vec3(uv.x, 1.0, uv.y); break;
+    case 3: dir = vec3(uv.x, -1.0, -uv.y); break;
+    case 4: dir = vec3(uv.x, -uv.y, 1.0); break;
+    default: dir = vec3(-uv.x, -uv.y, -1.0); break;
+  }
+  return normalize(dir);
+}
+
+void main() {
+  const ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  const int face = int(gl_GlobalInvocationID.z);
+  const int size = int(pc.params.x);
+  if (px.x >= size || px.y >= size || face >= 6) return;
+
+  const vec3 N = cube_direction(px, face, pc.params.x);
+  const vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  const vec3 right = normalize(cross(up, N));
+  const vec3 tangent_up = cross(N, right);
+
+  vec3 sum = vec3(0.0);
+  float weight = 0.0;
+
+  // Hemisphere grid: 0.025 rad steps over phi/theta.
+  const float delta = pc.params.z;
+  for (float phi = 0.0; phi < 2.0 * PI; phi += delta) {
+    for (float theta = 0.0; theta < 0.5 * PI; theta += delta) {
+      const vec3 t = vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+      const vec3 dir = tangent_up * t.x + right * t.y + N * t.z;
+      const float cos_theta = dot(N, dir);
+      // Solid angle of the sample in this parameterisation.
+      const float sa = sin(theta) * cos(theta) * delta * delta;
+      sum += texture(uEnvironment, dir).rgb * cos_theta * sa;
+      weight += cos_theta * sa;
+    }
+  }
+
+  // weight ~= PI for a full hemisphere; normalise defensively.
+  sum *= PI / max(weight, 1e-4);
+
+  imageStore(outIrradiance, ivec3(px, face), vec4(sum, 1.0));
+}

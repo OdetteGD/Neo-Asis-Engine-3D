@@ -72,9 +72,8 @@ struct JobSystem::Impl {
           w.queue.pop_front();
           got = true;
         } else {
-          w.cv.wait_for(lock, std::chrono::microseconds(250), [&] {
-            return !w.queue.empty() || quit.load(std::memory_order_relaxed);
-          });
+          w.cv.wait_for(lock, std::chrono::microseconds(250),
+                        [&] { return !w.queue.empty() || quit.load(std::memory_order_relaxed); });
           if (!w.queue.empty()) {
             job = w.queue.front();
             w.queue.pop_front();
@@ -83,11 +82,14 @@ struct JobSystem::Impl {
         }
       }
 
-      if (!got) got = try_steal(index, job);
-      if (!got) continue;
+      if (!got)
+        got = try_steal(index, job);
+      if (!got)
+        continue;
 
       busy.fetch_add(1, std::memory_order_relaxed);
-      if (job.fn) job.fn(job.data);
+      if (job.fn)
+        job.fn(job.data);
       if (busy.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         idle_cv.notify_all();
       }
@@ -113,7 +115,8 @@ struct JobSystem::Impl {
       w->cv.notify_all();
     }
     for (auto& w : workers) {
-      if (w->thread.joinable()) w->thread.join();
+      if (w->thread.joinable())
+        w->thread.join();
     }
     workers.clear();
   }
@@ -132,7 +135,9 @@ JobSystem::JobSystem(const Config& cfg) : impl_(std::make_unique<Impl>()) {
   NEO_INFO(kCore, "JobSystem: {} workers ({} hw threads)", worker_count_, hardware_threads());
 }
 
-JobSystem::~JobSystem() { impl_->stop(); }
+JobSystem::~JobSystem() {
+  impl_->stop();
+}
 
 void JobSystem::run(const Job& job) {
   // Dispatch round-robin across workers; cheap and good enough for
@@ -142,44 +147,50 @@ void JobSystem::run(const Job& job) {
 }
 
 void JobSystem::run_range(u32 count, u32 grain, JobFn fn, void* data, JobCounter* counter) {
-  if (count == 0) return;
+  if (count == 0)
+    return;
   grain = std::max(grain, 1u);
   const u32 chunks = (count + grain - 1) / grain;
 
   auto* payloads = new RangePayload[chunks];
-  if (counter) counter->increment(static_cast<i32>(chunks));
+  if (counter)
+    counter->increment(static_cast<i32>(chunks));
 
   for (u32 c = 0; c < chunks; ++c) {
     payloads[c] = RangePayload{c * grain, std::min(count, (c + 1) * grain), grain, fn, data};
-    run(Job{
-        [](void* raw) {
-          auto* p = static_cast<RangePayload*>(raw);
-          p->fn(p->data);
-        },
-        &payloads[c], 0});
+    run(Job{[](void* raw) {
+              auto* p = static_cast<RangePayload*>(raw);
+              p->fn(p->data);
+            },
+            &payloads[c], 0});
   }
   // NOTE: payload lifetime is owned by the caller through `counter`; for the
   // common "fire and wait_idle" path wait_idle() drains before we would free.
   if (counter) {
     // Attach a reaper so the array outlives the jobs.
-    struct Reaper { RangePayload* p; JobCounter* c; };
+    struct Reaper {
+      RangePayload* p;
+      JobCounter* c;
+    };
     run(Job{[](void* raw) {
-             auto* r = static_cast<Reaper*>(raw);
-             r->c->wait();
-             delete[] r->p;
-             delete r;
-           },
-           new Reaper{payloads, counter}, 0});
+              auto* r = static_cast<Reaper*>(raw);
+              r->c->wait();
+              delete[] r->p;
+              delete r;
+            },
+            new Reaper{payloads, counter}, 0});
   }
 }
 
 void JobSystem::wait_idle() {
   std::unique_lock lock(impl_->idle_mutex);
   impl_->idle_cv.wait_for(lock, std::chrono::milliseconds(500), [&] {
-    if (impl_->busy.load(std::memory_order_acquire) != 0) return false;
+    if (impl_->busy.load(std::memory_order_acquire) != 0)
+      return false;
     for (auto& w : impl_->workers) {
       std::lock_guard wl(w->mutex);
-      if (!w->queue.empty()) return false;
+      if (!w->queue.empty())
+        return false;
     }
     return true;
   });

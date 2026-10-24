@@ -18,10 +18,8 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+// Cloud pass has its own descriptor set: just the output image.
 layout(set = 1, binding = 0, rgba16f) uniform image2D outClouds;
-
-// Low-frequency weather/coverage map (RGBA: coverage, density, type, spare).
-layout(set = 1, binding = 1) uniform sampler2D weatherMap;
 
 layout(push_constant) uniform CloudPC {
   vec4 screen;      // xy = render size
@@ -111,8 +109,9 @@ float sample_density(vec3 world, out float height_fraction) {
   vec3 wind = vec3(frame.cloudWind.x, 0.0, frame.cloudWind.y) * frame.timing.x;
   vec3 p = (world + wind) * 0.00035;
 
-  float weather = texture(weatherMap, (world.xz + wind.xz) * 0.00008).r;
-  float coverage = clamp(pc.params.x * weather * 1.6, 0.0, 1.0);
+  // Coverage comes straight from the scene's sky settings. A weather map is a
+  // later enhancement; the shape noise already breaks up the uniformity.
+  float coverage = clamp(pc.params.x * 1.35, 0.0, 1.0);
   if (coverage < 0.02) return 0.0;
 
   // Vertical profile: flat base, cauliflower top.

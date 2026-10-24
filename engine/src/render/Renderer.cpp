@@ -6,6 +6,9 @@
 #include "neo/gfx/GpuAllocator.h"
 #include "neo/gfx/PipelineCache.h"
 #include "neo/render/FrameData.h"
+#include "neo/render/GltfLoader.h"
+#include "neo/render/IBLBaker.h"
+#include "neo/render/Resources.h"
 #include "neo/scene/Scene.h"
 
 #include <algorithm>
@@ -16,7 +19,7 @@ namespace neo {
 
 namespace {
 
-constexpr u32 kFramesInFlight = 2;  // 2 is the mobile latency/power sweet spot
+constexpr u32 kFramesInFlight = 2; // 2 is the mobile latency/power sweet spot
 constexpr u32 kBloomMipCount = 6;
 
 // Render target formats. Chosen for bandwidth: the G-buffer packs normals into
@@ -71,10 +74,23 @@ struct Renderer::Impl {
 
   VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
   VkDescriptorSetLayout frame_layout = VK_NULL_HANDLE;
-  VkDescriptorSetLayout gbuffer_layout = VK_NULL_HANDLE;
-  VkDescriptorSetLayout lighting_layout = VK_NULL_HANDLE;
-  VkPipelineLayout frame_pipeline_layout = VK_NULL_HANDLE;
-  VkPipelineLayout lighting_pipeline_layout = VK_NULL_HANDLE;
+  VkDescriptorSetLayout scene_layout = VK_NULL_HANDLE;        // set 2: G-buffer inputs
+  VkDescriptorSetLayout post_layout = VK_NULL_HANDLE;         // set 2: post inputs
+  VkPipelineLayout frame_pipeline_layout = VK_NULL_HANDLE;    // set 0 + bindless
+  VkPipelineLayout lighting_pipeline_layout = VK_NULL_HANDLE; // sets 0,2,3
+  VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;     // sets 0,2
+  VkPipelineLayout sky_pipeline_layout = VK_NULL_HANDLE;      // set 0 only
+  VkDescriptorSet scene_set = VK_NULL_HANDLE;
+  VkDescriptorSet post_set = VK_NULL_HANDLE;
+  VkDescriptorSet cloud_set = VK_NULL_HANDLE;
+  VkDescriptorSetLayout cloud_layout = VK_NULL_HANDLE;
+  VkPipelineLayout cloud_pipeline_layout = VK_NULL_HANDLE;
+
+  std::unique_ptr<ResourceRegistry> registry;
+  std::unique_ptr<IBLBaker> ibl;
+  IBLBakeParams last_bake{};
+  bool ibl_pending = true;
+  bool geometry_uploaded = false;
 
   std::array<PerFrame, kFramesInFlight> frames{};
   u32 frame_index = 0;
@@ -88,7 +104,7 @@ struct Renderer::Impl {
   Image gbuffer_emissive{};
   Image hdr{};
   Image cloud{};
-  Image bloom{};  // array of mips via views
+  Image bloom{}; // array of mips via views
   std::array<VkImageView, kBloomMipCount> bloom_views{};
 
   // Pipelines
@@ -100,9 +116,7 @@ struct Renderer::Impl {
   VkPipeline p_bloom_up = VK_NULL_HANDLE;
   VkPipeline p_tonemap = VK_NULL_HANDLE;
   VkPipeline p_clouds = VK_NULL_HANDLE;
-
-  VkDescriptorSet lighting_set = VK_NULL_HANDLE;
-  VkDescriptorSet tonemap_set = VK_NULL_HANDLE;
+  VkSampler linear_sampler = VK_NULL_HANDLE;
 
   // Shadow atlas (single 2D image, cascades as tiles)
   Image shadow{};
@@ -127,7 +141,8 @@ struct Renderer::Impl {
     desc.usage = usage;
     desc.memory = MemoryClass::DeviceLocal;
 
-    if (!alloc->create_image(desc, out.image, out.alloc)) return false;
+    if (!alloc->create_image(desc, out.image, out.alloc))
+      return false;
     out.format = format;
     out.extent = {w, h};
     out.mips = mips;
@@ -145,14 +160,17 @@ struct Renderer::Impl {
   }
 
   void destroy_image(Image& img) {
-    if (img.view) vkDestroyImageView(ctx->device(), img.view, nullptr);
-    if (img.image) alloc->destroy_image(img.image, img.alloc);
+    if (img.view)
+      vkDestroyImageView(ctx->device(), img.view, nullptr);
+    if (img.image)
+      alloc->destroy_image(img.image, img.alloc);
     img = Image{};
   }
 
   bool create_targets(u32 w, u32 h, const QualitySettings& q) {
     destroy_targets();
-    if (w == 0 || h == 0) return false;
+    if (w == 0 || h == 0)
+      return false;
 
     const VkImageUsageFlags sampled = VK_IMAGE_USAGE_SAMPLED_BIT;
 
@@ -219,6 +237,10 @@ struct Renderer::Impl {
     }
     shadow_cascade_count = q.shadow_cascade_count;
     shadow_size = q.shadow_map_size;
+
+    // Target views changed, so every binding that references them must be
+    // rewritten. Sets themselves are reused (views are updated in place).
+    write_pass_sets();
     return true;
   }
 
@@ -231,38 +253,153 @@ struct Renderer::Impl {
     destroy_image(cloud);
     destroy_image(bloom);
     for (VkImageView& v : bloom_views) {
-      if (v) vkDestroyImageView(ctx->device(), v, nullptr);
+      if (v)
+        vkDestroyImageView(ctx->device(), v, nullptr);
       v = VK_NULL_HANDLE;
+    }
+  }
+
+  // --- Descriptor sets for the pass inputs --------------------------------
+  void write_pass_sets() {
+    if (depth.view == VK_NULL_HANDLE)
+      return;
+    const VkDevice dev = ctx->device();
+
+    if (linear_sampler == VK_NULL_HANDLE) {
+      VkSamplerCreateInfo sci{};
+      sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+      sci.magFilter = VK_FILTER_LINEAR;
+      sci.minFilter = VK_FILTER_LINEAR;
+      sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+      sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      sci.maxLod = 1.0f;
+      NEO_VK_CHECK(vkCreateSampler(dev, &sci, nullptr, &linear_sampler));
+    }
+
+    auto alloc = [&](VkDescriptorSetLayout layout, VkDescriptorSet& set) {
+      if (set != VK_NULL_HANDLE)
+        return true;
+      VkDescriptorSetAllocateInfo ai{};
+      ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      ai.descriptorPool = descriptor_pool;
+      ai.descriptorSetCount = 1;
+      ai.pSetLayouts = &layout;
+      return vkAllocateDescriptorSets(dev, &ai, &set) == VK_SUCCESS;
+    };
+
+    auto write_sampler = [&](VkDescriptorSet set, u32 binding, VkImageView view) {
+      VkDescriptorImageInfo info{};
+      info.sampler = linear_sampler;
+      info.imageView = view;
+      info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkWriteDescriptorSet w{};
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.dstSet = set;
+      w.dstBinding = binding;
+      w.descriptorCount = 1;
+      w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      w.pImageInfo = &info;
+      vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+    };
+
+    if (!alloc(scene_layout, scene_set) || !alloc(post_layout, post_set))
+      return;
+
+    const VkImageView cloud_view = (cloud.view != VK_NULL_HANDLE) ? cloud.view : hdr.view;
+    write_sampler(scene_set, 0, gbuffer_albedo.view);
+    write_sampler(scene_set, 1, gbuffer_normal.view);
+    write_sampler(scene_set, 2, gbuffer_emissive.view);
+    write_sampler(scene_set, 3, depth.view);
+    write_sampler(scene_set, 4, cloud_view);
+
+    const VkImageView bloom_view = (bloom_views[0] != VK_NULL_HANDLE) ? bloom_views[0] : hdr.view;
+    write_sampler(post_set, 0, hdr.view);
+    write_sampler(post_set, 1, bloom_view);
+    write_sampler(post_set, 2, depth.view);
+
+    // Cloud output (storage image, always written in GENERAL layout).
+    if (cloud.view != VK_NULL_HANDLE && alloc(cloud_layout, cloud_set)) {
+      VkDescriptorImageInfo info{};
+      info.imageView = cloud.view;
+      info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkWriteDescriptorSet w{};
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.dstSet = cloud_set;
+      w.dstBinding = 0;
+      w.descriptorCount = 1;
+      w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      w.pImageInfo = &info;
+      vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
     }
   }
 
   // --- Pipelines ----------------------------------------------------------
   bool create_pipelines(const QualitySettings& q) {
-    const VkDevice dev = ctx->device();
-
-    // Frame set: UBO (frame constants) + SSBO (lights).
-    frame_layout = pipelines->create_set_layout({
-        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
-    });
-    frame_pipeline_layout = pipelines->create_layout({frame_layout}, sizeof(DrawConstants),
-                                                     VK_SHADER_STAGE_VERTEX_BIT |
-                                                         VK_SHADER_STAGE_FRAGMENT_BIT);
-
-    // Fullscreen pass layout: frame + a handful of input textures.
-    std::vector<VkDescriptorSetLayoutBinding> fs_bindings;
-    for (u32 i = 0; i < 6; ++i) {
-      fs_bindings.push_back({i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                             VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-                             nullptr});
+    // set 0: frame constants (UBO) + lights (SSBO), shared by every pass.
+    if (frame_layout == VK_NULL_HANDLE) {
+      frame_layout = pipelines->create_set_layout({
+          {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
+          {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr},
+      });
     }
-    lighting_layout = pipelines->create_set_layout(fs_bindings);
-    lighting_pipeline_layout =
-        pipelines->create_layout({frame_layout, lighting_layout}, 64,
-                                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-                                     VK_SHADER_STAGE_COMPUTE_BIT);
 
-    // --- Shadow pass: depth only, no fragment shader work beyond discard ----
+    // set 2 for deferred lighting: G-buffer + depth + clouds.
+    if (scene_layout == VK_NULL_HANDLE) {
+      std::vector<VkDescriptorSetLayoutBinding> b;
+      for (u32 i = 0; i < 5; ++i) {
+        b.push_back({i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                     nullptr});
+      }
+      scene_layout = pipelines->create_set_layout(b);
+    }
+
+    // Cloud compute: frame constants + its own output image.
+    if (cloud_layout == VK_NULL_HANDLE) {
+      cloud_layout = pipelines->create_set_layout({
+          {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      });
+      cloud_pipeline_layout =
+          pipelines->create_layout({frame_layout, cloud_layout}, 64, VK_SHADER_STAGE_COMPUTE_BIT);
+    }
+
+    // The IBL baker needs the frame layout before the lighting layout can
+    // include its descriptor set.
+    if (ibl && !ibl->initialized()) {
+      ibl->initialize(frame_layout, frames[0].pool, ctx->graphics_queue());
+      ibl_pending = true;
+    }
+
+    // set 2 for post: HDR colour, bloom, depth.
+    if (post_layout == VK_NULL_HANDLE) {
+      std::vector<VkDescriptorSetLayoutBinding> b;
+      for (u32 i = 0; i < 3; ++i) {
+        b.push_back({i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                     nullptr});
+      }
+      post_layout = pipelines->create_set_layout(b);
+    }
+
+    // Geometry passes: frame constants + the bindless texture array.
+    frame_pipeline_layout =
+        pipelines->create_layout({frame_layout, registry->bindless_layout()}, sizeof(DrawConstants),
+                                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    // Lighting: frame + scene inputs + baked IBL.
+    lighting_pipeline_layout = pipelines->create_layout(
+        {frame_layout, scene_layout, ibl->descriptor_layout()}, 64,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+
+    // Post: frame + post inputs.
+    post_pipeline_layout = pipelines->create_layout(
+        {frame_layout, post_layout}, 64, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    // Sky: frame constants only.
+    sky_pipeline_layout = pipelines->create_layout(
+        {frame_layout}, 64, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    // --- Shadow pass -------------------------------------------------------
     VkShaderModule shadow_vs = pipelines->load("passes/shadow.vert");
     VkShaderModule shadow_fs = pipelines->load("passes/shadow.frag");
     if (shadow_vs && shadow_fs) {
@@ -272,15 +409,14 @@ struct Renderer::Impl {
       d.frag = shadow_fs;
       d.layout = frame_pipeline_layout;
       d.depth_format = VK_FORMAT_D32_SFLOAT;
-      d.depth_compare = VK_COMPARE_OP_LESS_OR_EQUAL;  // ortho shadow maps use regular depth
+      d.depth_compare = VK_COMPARE_OP_LESS_OR_EQUAL;
       d.depth_write = true;
       d.cull = VK_CULL_MODE_BACK_BIT;
-      // Push constants: cascade matrix + cascade index.
       d.push_constant_size = sizeof(DrawConstants);
       p_shadow = pipelines->create(d);
     }
 
-    // --- G-buffer -----------------------------------------------------------
+    // --- G-buffer ----------------------------------------------------------
     VkShaderModule gbuf_vs = pipelines->load("passes/gbuffer.vert");
     VkShaderModule gbuf_fs = pipelines->load("passes/gbuffer.frag");
     if (gbuf_vs && gbuf_fs) {
@@ -291,23 +427,24 @@ struct Renderer::Impl {
       d.layout = frame_pipeline_layout;
       d.color_formats = {kAlbedoFormat, kNormalFormat, kEmissiveFormat};
       d.depth_format = kDepthFormat;
-      d.depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL;  // reverse-Z
+      d.depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL; // reverse-Z
       d.depth_write = true;
       d.samples = q.msaa;
       d.push_constant_size = sizeof(DrawConstants);
       p_gbuffer = pipelines->create(d);
     }
 
-    // --- Fullscreen passes --------------------------------------------------
+    // --- Fullscreen passes -------------------------------------------------
     VkShaderModule fs_vs = pipelines->load("passes/fullscreen.vert");
     auto make_fs = [&](VkShaderModule fs, const char* name, VkPipeline* out,
-                       std::vector<VkFormat> formats) {
-      if (!fs) return;
+                       VkPipelineLayout layout, std::vector<VkFormat> formats) {
+      if (!fs || !fs_vs)
+        return;
       GraphicsPipelineDesc d{};
       d.name = name;
       d.vert = fs_vs;
       d.frag = fs;
-      d.layout = lighting_pipeline_layout;
+      d.layout = layout;
       d.color_formats = std::move(formats);
       d.depth_format = VK_FORMAT_UNDEFINED;
       d.depth_test = false;
@@ -318,21 +455,23 @@ struct Renderer::Impl {
     };
 
     if (fs_vs) {
-      make_fs(pipelines->load("passes/sky.frag"), "sky", &p_sky, {kHdrFormat});
-      make_fs(pipelines->load("passes/lighting.frag"), "lighting", &p_lighting, {kHdrFormat});
-      make_fs(pipelines->load("fb/tonemap.frag"), "tonemap", &p_tonemap, {});
+      make_fs(pipelines->load("passes/sky.frag"), "sky", &p_sky, sky_pipeline_layout, {kHdrFormat});
+      make_fs(pipelines->load("passes/lighting.frag"), "lighting", &p_lighting,
+              lighting_pipeline_layout, {kHdrFormat});
+      make_fs(pipelines->load("fb/tonemap.frag"), "tonemap", &p_tonemap, post_pipeline_layout, {});
       if (q.bloom) {
-        make_fs(pipelines->load("fb/bloom_down.frag"), "bloom_down", &p_bloom_down, {kHdrFormat});
-        make_fs(pipelines->load("fb/bloom_up.frag"), "bloom_up", &p_bloom_up, {kHdrFormat});
+        make_fs(pipelines->load("fb/bloom_down.frag"), "bloom_down", &p_bloom_down,
+                post_pipeline_layout, {kHdrFormat});
+        make_fs(pipelines->load("fb/bloom_up.frag"), "bloom_up", &p_bloom_up, post_pipeline_layout,
+                {kHdrFormat});
       }
       VkShaderModule cloud_cs = pipelines->load("passes/clouds.comp");
       if (cloud_cs) {
-        p_clouds = pipelines->create(ComputePipelineDesc{"clouds", cloud_cs,
-                                                         lighting_pipeline_layout});
+        p_clouds =
+            pipelines->create(ComputePipelineDesc{"clouds", cloud_cs, cloud_pipeline_layout});
       }
     }
 
-    (void)dev;
     return p_gbuffer != VK_NULL_HANDLE && p_lighting != VK_NULL_HANDLE &&
            p_tonemap != VK_NULL_HANDLE;
   }
@@ -345,51 +484,51 @@ QualitySettings QualitySettings::for_preset(QualityPreset p) {
   QualitySettings q{};
   q.preset = p;
   switch (p) {
-    case QualityPreset::Low:
-      q.msaa = VK_SAMPLE_COUNT_1_BIT;
-      q.shadow_cascade_count = 2;
-      q.shadow_map_size = 512;
-      q.volumetric_clouds = false;
-      q.cloud_steps = 24;
-      q.cloud_render_scale = 0.25f;
-      q.bloom = true;
-      q.fxaa = true;
-      q.taa = false;
-      q.dynamic_resolution = true;
-      q.render_scale = 0.75f;
-      q.target_frame_ms = 33.3f;  // 30 fps floor
-      break;
-    case QualityPreset::Medium:
-      q.msaa = VK_SAMPLE_COUNT_1_BIT;
-      q.shadow_cascade_count = 3;
-      q.shadow_map_size = 1024;
-      q.volumetric_clouds = true;
-      q.cloud_steps = 32;
-      q.cloud_render_scale = 0.35f;
-      q.dynamic_resolution = true;
-      q.render_scale = 1.0f;
-      q.target_frame_ms = 16.6f;
-      break;
-    case QualityPreset::High:
-      q.msaa = VK_SAMPLE_COUNT_2_BIT;
-      q.shadow_cascade_count = 4;
-      q.shadow_map_size = 1536;
-      q.cloud_steps = 48;
-      q.cloud_render_scale = 0.5f;
-      q.dynamic_resolution = true;
-      q.taa = true;
-      q.fxaa = false;
-      break;
-    case QualityPreset::Ultra:
-      q.msaa = VK_SAMPLE_COUNT_4_BIT;
-      q.shadow_cascade_count = 4;
-      q.shadow_map_size = 2048;
-      q.cloud_steps = 72;
-      q.cloud_render_scale = 0.5f;
-      q.dynamic_resolution = false;
-      q.taa = true;
-      q.fxaa = false;
-      break;
+  case QualityPreset::Low:
+    q.msaa = VK_SAMPLE_COUNT_1_BIT;
+    q.shadow_cascade_count = 2;
+    q.shadow_map_size = 512;
+    q.volumetric_clouds = false;
+    q.cloud_steps = 24;
+    q.cloud_render_scale = 0.25f;
+    q.bloom = true;
+    q.fxaa = true;
+    q.taa = false;
+    q.dynamic_resolution = true;
+    q.render_scale = 0.75f;
+    q.target_frame_ms = 33.3f; // 30 fps floor
+    break;
+  case QualityPreset::Medium:
+    q.msaa = VK_SAMPLE_COUNT_1_BIT;
+    q.shadow_cascade_count = 3;
+    q.shadow_map_size = 1024;
+    q.volumetric_clouds = true;
+    q.cloud_steps = 32;
+    q.cloud_render_scale = 0.35f;
+    q.dynamic_resolution = true;
+    q.render_scale = 1.0f;
+    q.target_frame_ms = 16.6f;
+    break;
+  case QualityPreset::High:
+    q.msaa = VK_SAMPLE_COUNT_2_BIT;
+    q.shadow_cascade_count = 4;
+    q.shadow_map_size = 1536;
+    q.cloud_steps = 48;
+    q.cloud_render_scale = 0.5f;
+    q.dynamic_resolution = true;
+    q.taa = true;
+    q.fxaa = false;
+    break;
+  case QualityPreset::Ultra:
+    q.msaa = VK_SAMPLE_COUNT_4_BIT;
+    q.shadow_cascade_count = 4;
+    q.shadow_map_size = 2048;
+    q.cloud_steps = 72;
+    q.cloud_render_scale = 0.5f;
+    q.dynamic_resolution = false;
+    q.taa = true;
+    q.fxaa = false;
+    break;
   }
   return q;
 }
@@ -401,9 +540,12 @@ QualityPreset Renderer::detect_tier(const VkPhysicalDeviceProperties& props) {
   const f32 score = static_cast<f32>(props.limits.maxComputeWorkGroupInvocations) *
                     (props.apiVersion >= VK_API_VERSION_1_2 ? 1.25f : 1.0f);
 
-  if (score >= 1400.0f) return QualityPreset::Ultra;
-  if (score >= 640.0f) return QualityPreset::High;
-  if (score >= 384.0f) return QualityPreset::Medium;
+  if (score >= 1400.0f)
+    return QualityPreset::Ultra;
+  if (score >= 640.0f)
+    return QualityPreset::High;
+  if (score >= 384.0f)
+    return QualityPreset::Medium;
   return QualityPreset::Low;
 }
 
@@ -505,10 +647,47 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
   dpci.pPoolSizes = sizes;
   NEO_VK_CHECK(vkCreateDescriptorPool(r->ctx_->device(), &dpci, nullptr, &I.descriptor_pool));
 
+  // --- Resource registry (geometry arenas + bindless textures) -----------
+  I.registry = ResourceRegistry::create(*r->ctx_);
+  if (!I.registry->initialize(I.frames[0].pool, r->ctx_->graphics_queue())) {
+    NEO_ERROR(kRender, "ResourceRegistry init failed");
+    return nullptr;
+  }
+  I.ibl = IBLBaker::create(*r->ctx_, *I.pipelines, IBLDesc{});
+
   I.create_targets(r->width_, r->height_, r->quality_);
   if (!I.create_pipelines(r->quality_)) {
     NEO_WARN(kRender, "Some pipelines failed to build — shaders may not have been compiled");
   }
+
+  // --- Per-frame descriptor sets -----------------------------------------
+  for (PerFrame& f : I.frames) {
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = I.descriptor_pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &I.frame_layout;
+    NEO_VK_CHECK(vkAllocateDescriptorSets(r->ctx_->device(), &ai, &f.frame_set));
+
+    VkDescriptorBufferInfo ubo{f.frame_ubo, 0, sizeof(FrameConstants)};
+    VkDescriptorBufferInfo ssbo{f.light_buffer, 0, sizeof(GpuLight) * kMaxLights};
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = f.frame_set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].pBufferInfo = &ubo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = f.frame_set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &ssbo;
+    vkUpdateDescriptorSets(r->ctx_->device(), 2, writes, 0, nullptr);
+  }
+
+  I.write_pass_sets();
 
   NEO_INFO(kRender, "Renderer ready: {}x{}, preset {}, {} draw pipelines", r->width_, r->height_,
            static_cast<int>(r->quality_.preset), I.pipelines->pipeline_count());
@@ -516,7 +695,8 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
 }
 
 Renderer::~Renderer() {
-  if (!impl_ || !ctx_) return;
+  if (!impl_ || !ctx_)
+    return;
 
   Impl& I = *impl_;
   vkDeviceWaitIdle(ctx_->device());
@@ -526,21 +706,31 @@ Renderer::~Renderer() {
   I.destroy_targets();
 
   for (VkImageView v : I.bloom_views) {
-    if (v) vkDestroyImageView(dev, v, nullptr);
+    if (v)
+      vkDestroyImageView(dev, v, nullptr);
   }
-  if (I.shadow.view) vkDestroyImageView(dev, I.shadow.view, nullptr);
-  if (I.shadow.image) I.alloc->destroy_image(I.shadow.image, I.shadow.alloc);
+  if (I.shadow.view)
+    vkDestroyImageView(dev, I.shadow.view, nullptr);
+  if (I.shadow.image)
+    I.alloc->destroy_image(I.shadow.image, I.shadow.alloc);
 
   for (PerFrame& f : I.frames) {
-    if (f.frame_ubo) I.alloc->destroy_buffer(f.frame_ubo, f.frame_ubo_alloc);
-    if (f.light_buffer) I.alloc->destroy_buffer(f.light_buffer, f.light_alloc);
-    if (f.image_available) vkDestroySemaphore(dev, f.image_available, nullptr);
-    if (f.render_finished) vkDestroySemaphore(dev, f.render_finished, nullptr);
-    if (f.in_flight) vkDestroyFence(dev, f.in_flight, nullptr);
-    if (f.pool) vkDestroyCommandPool(dev, f.pool, nullptr);
+    if (f.frame_ubo)
+      I.alloc->destroy_buffer(f.frame_ubo, f.frame_ubo_alloc);
+    if (f.light_buffer)
+      I.alloc->destroy_buffer(f.light_buffer, f.light_alloc);
+    if (f.image_available)
+      vkDestroySemaphore(dev, f.image_available, nullptr);
+    if (f.render_finished)
+      vkDestroySemaphore(dev, f.render_finished, nullptr);
+    if (f.in_flight)
+      vkDestroyFence(dev, f.in_flight, nullptr);
+    if (f.pool)
+      vkDestroyCommandPool(dev, f.pool, nullptr);
   }
 
-  if (I.descriptor_pool) vkDestroyDescriptorPool(dev, I.descriptor_pool, nullptr);
+  if (I.descriptor_pool)
+    vkDestroyDescriptorPool(dev, I.descriptor_pool, nullptr);
   delete I.pipelines;
   impl_.reset();
 }
@@ -556,8 +746,8 @@ bool Renderer::begin_frame() {
 
   if (!swapchain_->acquire(f.image_available, &I.current_image)) {
     if (swapchain_->needs_rebuild()) {
-      swapchain_ = Swapchain::create(*ctx_, SwapchainDesc{width_, height_, quality_.preset !=
-                                                                          QualityPreset::Low});
+      swapchain_ = Swapchain::create(
+          *ctx_, SwapchainDesc{width_, height_, quality_.preset != QualityPreset::Low});
       if (swapchain_) {
         width_ = swapchain_->extent().width;
         height_ = swapchain_->extent().height;
@@ -583,8 +773,8 @@ bool Renderer::begin_frame() {
                        1.0f / static_cast<f32>(std::max(1u, height_)));
   c.post_params = vec4(I.render_scale, 0.18f, quality_.bloom_intensity,
                        static_cast<f32>(static_cast<u8>(quality_.preset)));
-  c.shadow_params = vec4(static_cast<f32>(I.shadow_cascade_count),
-                         static_cast<f32>(I.shadow_size), 0.0008f, 1.5f);
+  c.shadow_params = vec4(static_cast<f32>(I.shadow_cascade_count), static_cast<f32>(I.shadow_size),
+                         0.0008f, 1.5f);
   std::memcpy(f.frame_ubo_mapped, &c, sizeof(FrameConstants));
   return true;
 }
@@ -600,32 +790,65 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
   I.visibility.light_indices.clear();
   scene.cull(camera.frustum(), I.visibility);
   scene.pack_lights(I.packed_lights);
-  const u32 light_count = static_cast<u32>(
-      std::min<usize>(I.packed_lights.size(), kMaxLights));
+  const u32 light_count = static_cast<u32>(std::min<usize>(I.packed_lights.size(), kMaxLights));
   if (light_count > 0) {
     std::memcpy(f.light_mapped, I.packed_lights.data(), sizeof(GpuLight) * light_count);
   }
   stats_.visible_instances = static_cast<u32>(I.visibility.renderables.size());
   stats_.visible_lights = light_count;
 
+  // --- One-time GPU work --------------------------------------------------
+  if (!I.geometry_uploaded) {
+    I.registry->flush_geometry(f.cmd);
+    I.geometry_uploaded = true;
+  }
+
+  // --- One-time GPU work --------------------------------------------------
+  if (!I.geometry_uploaded) {
+    I.registry->flush_geometry(f.cmd);
+    I.geometry_uploaded = true;
+  }
+
   // --- Sun / atmosphere ---------------------------------------------------
   const vec3 sun_dir = scene.sun_direction();
   f.constants.sun_direction = vec4(sun_dir, scene.sky().sun_intensity);
   f.constants.sun_color =
       vec4(scene.sky().sun_color, scene.sky().angular_radius_degrees * kDegToRad);
-  f.constants.cloud_params = vec4(scene.sky().cloud_coverage, scene.sky().cloud_density,
-                                  static_cast<f32>(quality_.cloud_steps),
-                                  static_cast<f32>(I.frame_counter % 1024));
+  f.constants.cloud_params =
+      vec4(scene.sky().cloud_coverage, scene.sky().cloud_density,
+           static_cast<f32>(quality_.cloud_steps), static_cast<f32>(I.frame_counter % 1024));
   f.constants.cloud_wind = vec4(scene.sky().wind_direction, 0.0f, 0.0f);
   f.constants.atmosphere_scale = vec4(6360e3f, 6460e3f, scene.sky().turbidity, 0.0f);
   std::memcpy(f.frame_ubo_mapped, &f.constants, sizeof(FrameConstants));
+
+  // --- Image-based lighting ----------------------------------------------
+  // Baked once at load, then only re-baked when the sun moves meaningfully.
+  IBLBakeParams bake_params{};
+  bake_params.sun_direction = sun_dir;
+  bake_params.sun_color = scene.sky().sun_color;
+  bake_params.sun_intensity = scene.sky().sun_intensity;
+  bake_params.angular_radius = scene.sky().angular_radius_degrees * kDegToRad;
+  bake_params.turbidity = scene.sky().turbidity;
+
+  if (I.ibl && (!I.ibl->ready() || I.ibl_pending)) {
+    if (I.ibl->bake(f.frame_set, bake_params)) {
+      I.ibl_pending = false;
+      I.last_bake = bake_params;
+    }
+  } else if (I.ibl && I.ibl->ready()) {
+    // Re-bake when the sun has drifted more than ~2 degrees.
+    const f32 dotp = glm::dot(I.last_bake.sun_direction, bake_params.sun_direction);
+    if (dotp < 0.9994f) {
+      if (I.ibl->bake(f.frame_set, bake_params))
+        I.last_bake = bake_params;
+    }
+  }
 
   // --- Depth layout transition -------------------------------------------
   cmd.image_barrier(I.depth.image, I.depth.layout, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                     VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT);
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
   I.depth.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 
   // =========================================================================
@@ -635,8 +858,7 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     cmd.label_begin(*ctx_, "GBuffer", vec4(0.2f, 0.5f, 1.0f, 1.0f));
 
     VkRenderingAttachmentInfo color_atts[3]{};
-    const std::array<Image*, 3> targets{&I.gbuffer_albedo, &I.gbuffer_normal,
-                                        &I.gbuffer_emissive};
+    const std::array<Image*, 3> targets{&I.gbuffer_albedo, &I.gbuffer_normal, &I.gbuffer_emissive};
     for (u32 i = 0; i < 3; ++i) {
       color_atts[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
       color_atts[i].imageView = targets[i]->view;
@@ -652,7 +874,7 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     depth_att.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depth_att.clearValue.depthStencil = {0.0f, 0};  // reverse-Z: clear to 0 (far)
+    depth_att.clearValue.depthStencil = {0.0f, 0}; // reverse-Z: clear to 0 (far)
 
     VkRenderingInfo ri{};
     ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -666,19 +888,42 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     cmd.set_viewport(0.0f, 0.0f, static_cast<f32>(width_), static_cast<f32>(height_));
     cmd.set_scissor(0, 0, width_, height_);
 
-    if (I.p_gbuffer != VK_NULL_HANDLE) {
+    if (I.p_gbuffer != VK_NULL_HANDLE && I.registry) {
       cmd.bind_pipeline(I.p_gbuffer);
-      // Real geometry submission is driven by the mesh registry; the vertex
-      // stream is a storage buffer of packed vertices indexed by gl_VertexIndex.
+      const VkDescriptorSet geo_sets[2] = {f.frame_set, I.registry->bindless_set()};
+      cmd.bind_descriptor_sets(I.frame_pipeline_layout, 0, 2, geo_sets);
+
+      // Geometry streams from the shared vertex/index arenas: one pipeline
+      // bind, one descriptor bind, then a draw per visible renderable.
       stats_.draw_calls = 0;
       for (EntityHandle e : I.visibility.renderables) {
+        const RenderableDesc* r = scene.renderable(e);
+        if (!r || !r->mesh.valid())
+          continue;
+        const Mesh* mesh = I.registry->mesh(r->mesh);
+        if (!mesh || !mesh->valid())
+          continue;
+
+        const Material* mat = I.registry->material(r->material);
+
         DrawConstants dc{};
         dc.model = scene.transform(e).matrix();
         dc.normal_matrix = glm::transpose(glm::inverse(dc.model));
+        if (mat) {
+          dc.base_color_factor = mat->base_color_factor;
+          dc.material_params =
+              vec4(mat->metallic, mat->roughness, mat->emissive_strength, mat->occlusion_strength);
+          dc.texture_indices = uvec4(mat->albedo_texture, mat->normal_texture, 0u, 0u);
+          dc.flags =
+              vec4(mat->alpha_test ? 1.0f : 0.0f, mat->double_sided ? 1.0f : 0.0f, 0.0f, 0.0f);
+        }
         cmd.push_constants(I.frame_pipeline_layout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            sizeof(DrawConstants), &dc);
-        cmd.draw(3);  // placeholder: full-screen triangle until meshes are bound
+
+        cmd.bind_index_buffer(I.registry->index_buffer(),
+                              static_cast<VkDeviceSize>(mesh->first_index) * sizeof(u32));
+        cmd.draw_indexed(mesh->index_count);
         ++stats_.draw_calls;
       }
     }
@@ -686,7 +931,8 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     cmd.end_rendering();
     cmd.label_end(*ctx_);
 
-    for (u32 i = 0; i < 3; ++i) targets[i]->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    for (u32 i = 0; i < 3; ++i)
+      targets[i]->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   }
 
   // =========================================================================
@@ -698,17 +944,23 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
 
     cmd.image_barrier(I.cloud.image, I.cloud.layout, VK_IMAGE_LAYOUT_GENERAL,
                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     I.cloud.layout = VK_IMAGE_LAYOUT_GENERAL;
 
     cmd.bind_compute(I.p_clouds);
+    if (I.cloud_set != VK_NULL_HANDLE) {
+      cmd.bind_compute_descriptor_sets(I.cloud_pipeline_layout, 0, 1, &f.frame_set);
+      cmd.bind_compute_descriptor_sets(I.cloud_pipeline_layout, 1, 1, &I.cloud_set);
+    }
+    if (I.cloud_set != VK_NULL_HANDLE) {
+      cmd.bind_compute_descriptor_sets(I.cloud_pipeline_layout, 0, 1, &f.frame_set);
+      cmd.bind_compute_descriptor_sets(I.cloud_pipeline_layout, 1, 1, &I.cloud_set);
+    }
     const u32 gx = (I.cloud.extent.width + 7) / 8;
     const u32 gy = (I.cloud.extent.height + 7) / 8;
     cmd.dispatch(gx, gy, 1);
 
-    cmd.memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+    cmd.memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     cmd.label_end(*ctx_);
@@ -740,9 +992,19 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
 
     if (I.p_lighting != VK_NULL_HANDLE) {
       cmd.bind_pipeline(I.p_lighting);
+      if (I.ibl && I.ibl->ready() && I.scene_set != VK_NULL_HANDLE) {
+        cmd.bind_descriptor_sets(I.lighting_pipeline_layout, 0, 1, &f.frame_set);
+        const VkDescriptorSet pass_sets[2] = {I.scene_set, I.ibl->descriptor_set()};
+        cmd.bind_descriptor_sets(I.lighting_pipeline_layout, 2, 2, pass_sets);
+      }
+      if (I.ibl && I.ibl->ready() && I.scene_set != VK_NULL_HANDLE) {
+        cmd.bind_descriptor_sets(I.lighting_pipeline_layout, 0, 1, &f.frame_set);
+        const VkDescriptorSet pass_sets[2] = {I.scene_set, I.ibl->descriptor_set()};
+        cmd.bind_descriptor_sets(I.lighting_pipeline_layout, 2, 2, pass_sets);
+      }
       struct LightingPush {
-        uvec4 flags;             // x = light count, y = invert_y, z = atmosphere, w = clouds
-        vec4 rotation;           // xy = pre-rotation row 0, zw = row 1
+        uvec4 flags;   // x = light count, y = invert_y, z = atmosphere, w = clouds
+        vec4 rotation; // xy = pre-rotation row 0, zw = row 1
         vec4 params;
       } push{};
       push.flags = uvec4(light_count, 1u, quality_.atmosphere ? 1u : 0u,
@@ -770,9 +1032,8 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
 
     const VkImage swap_image = swapchain_->image(I.current_image);
     cmd.image_barrier(swap_image, VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                      0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
     VkRenderingAttachmentInfo swap_att{};
@@ -796,10 +1057,18 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
 
     if (I.p_tonemap != VK_NULL_HANDLE) {
       cmd.bind_pipeline(I.p_tonemap);
+      if (I.post_set != VK_NULL_HANDLE) {
+        cmd.bind_descriptor_sets(I.post_pipeline_layout, 0, 1, &f.frame_set);
+        cmd.bind_descriptor_sets(I.post_pipeline_layout, 2, 1, &I.post_set);
+      }
+      if (I.post_set != VK_NULL_HANDLE) {
+        cmd.bind_descriptor_sets(I.post_pipeline_layout, 0, 1, &f.frame_set);
+        cmd.bind_descriptor_sets(I.post_pipeline_layout, 2, 1, &I.post_set);
+      }
       struct TonemapPush {
-        vec4 exposure;        // x = exposure, y = bloom, z = fxaa, w = vignette
-        vec4 pre_rotation_x;  // row 0 of the surface pre-rotation matrix
-        vec4 pre_rotation_y;  // row 1
+        vec4 exposure;       // x = exposure, y = bloom, z = fxaa, w = vignette
+        vec4 pre_rotation_x; // row 0 of the surface pre-rotation matrix
+        vec4 pre_rotation_y; // row 1
       } tp{};
       tp.exposure = vec4(1.0f, quality_.bloom ? quality_.bloom_intensity : 0.0f,
                          quality_.fxaa ? 1.0f : 0.0f, 0.15f);
@@ -819,8 +1088,7 @@ void Renderer::render(Scene& scene, const Camera& camera, f32 /*delta_seconds*/)
     cmd.image_barrier(swap_image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                      VK_PIPELINE_STAGE_2_NONE, 0);
+                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     cmd.label_end(*ctx_);
   }
 
@@ -873,8 +1141,10 @@ void Renderer::end_frame() {
 }
 
 void Renderer::resize(u32 width, u32 height) {
-  if (width == 0 || height == 0) return;
-  if (width == width_ && height == height_) return;
+  if (width == 0 || height == 0)
+    return;
+  if (width == width_ && height == height_)
+    return;
 
   Impl& I = *impl_;
   vkDeviceWaitIdle(ctx_->device());
@@ -906,6 +1176,14 @@ void Renderer::on_surface_lost() {
 void Renderer::on_surface_recreated() {
   Impl& I = *impl_;
   I.create_targets(width_, height_, quality_);
+}
+
+ResourceRegistry& Renderer::resources() {
+  return *impl_->registry;
+}
+
+IBLBaker& Renderer::ibl_baker() {
+  return *impl_->ibl;
 }
 
 void Renderer::set_quality(QualitySettings settings) {

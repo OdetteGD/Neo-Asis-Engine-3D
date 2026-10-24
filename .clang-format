@@ -40,4 +40,3 @@ SortIncludes: CaseSensitive
 SpaceAfterTemplateKeyword: true
 SpaceBeforeParens: ControlStatements
 SpacesInAngles: Never
-Standard: c++20

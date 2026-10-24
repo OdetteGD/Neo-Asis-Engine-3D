@@ -68,6 +68,8 @@ private:
 #endif
 };
 
-inline AssetSystem& assets() { return AssetSystem::instance(); }
+inline AssetSystem& assets() {
+  return AssetSystem::instance();
+}
 
 } // namespace neo

@@ -27,8 +27,7 @@ using usize = std::size_t;
 // A 32-bit index + 32-bit generation packed in a u64. Zero is "null".
 // Handles are cheap to copy, safe against stale references, and trivially
 // hashable — used for meshes, materials, textures, entities, GPU resources.
-template <typename Tag>
-class Handle {
+template <typename Tag> class Handle {
 public:
   static constexpr u32 kIndexBits = 24;
   static constexpr u32 kIndexMask = (1u << kIndexBits) - 1u;
@@ -77,8 +76,7 @@ using BufferHandle = Handle<BufferTag>;
   return (v + a - 1ull) & ~(a - 1ull);
 }
 
-template <typename T>
-[[nodiscard]] inline constexpr T clamp(T v, T lo, T hi) {
+template <typename T> [[nodiscard]] inline constexpr T clamp(T v, T lo, T hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 

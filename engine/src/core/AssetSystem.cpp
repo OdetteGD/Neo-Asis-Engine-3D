@@ -18,16 +18,22 @@ AssetSystem& AssetSystem::instance() {
 }
 
 AssetType AssetSystem::type_from_extension(std::string_view ext) {
-  if (ext == ".spv" || ext == ".glsl") return AssetType::Shader;
-  if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".ktx2" ||
-      ext == ".astc" || ext == ".basis") {
+  if (ext == ".spv" || ext == ".glsl")
+    return AssetType::Shader;
+  if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".ktx2" || ext == ".astc" ||
+      ext == ".basis") {
     return AssetType::Texture;
   }
-  if (ext == ".gltf" || ext == ".glb" || ext == ".mesh") return AssetType::Mesh;
-  if (ext == ".nmat") return AssetType::Material;
-  if (ext == ".nscene") return AssetType::Scene;
-  if (ext == ".wav" || ext == ".ogg") return AssetType::Audio;
-  if (ext == ".cs" || ext == ".wasm") return AssetType::Script;
+  if (ext == ".gltf" || ext == ".glb" || ext == ".mesh")
+    return AssetType::Mesh;
+  if (ext == ".nmat")
+    return AssetType::Material;
+  if (ext == ".nscene")
+    return AssetType::Scene;
+  if (ext == ".wav" || ext == ".ogg")
+    return AssetType::Audio;
+  if (ext == ".cs" || ext == ".wasm")
+    return AssetType::Script;
   return AssetType::Unknown;
 }
 
@@ -65,7 +71,8 @@ std::vector<u8> AssetSystem::read_binary(std::string_view virtual_path) const {
       std::vector<u8> out(static_cast<usize>(len));
       const int read = AAsset_read(a, out.data(), static_cast<size_t>(len));
       AAsset_close(a);
-      if (read == static_cast<int>(len)) return out;
+      if (read == static_cast<int>(len))
+        return out;
       NEO_ERROR(kAsset, "Short read on asset {}", path);
       return {};
     }
@@ -75,7 +82,8 @@ std::vector<u8> AssetSystem::read_binary(std::string_view virtual_path) const {
 
   const std::filesystem::path full = root_ / path;
   std::ifstream in(full, std::ios::binary | std::ios::ate);
-  if (!in) return {};
+  if (!in)
+    return {};
   const auto size = static_cast<usize>(in.tellg());
   in.seekg(0);
   std::vector<u8> out(size);
@@ -98,7 +106,8 @@ bool AssetSystem::write_binary(std::string_view path, const std::vector<u8>& dat
   std::error_code ec;
   std::filesystem::create_directories(full.parent_path(), ec);
   std::ofstream out(full, std::ios::binary | std::ios::trunc);
-  if (!out) return false;
+  if (!out)
+    return false;
   out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
   return out.good();
 }
@@ -114,13 +123,15 @@ std::vector<AssetMetadata> AssetSystem::list(std::string_view virtual_dir) const
   const std::filesystem::path dir = root_ / std::string(virtual_dir);
 
   std::error_code ec;
-  if (!std::filesystem::exists(dir, ec)) return out;
+  if (!std::filesystem::exists(dir, ec))
+    return out;
 
   for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-    if (!entry.is_regular_file()) continue;
+    if (!entry.is_regular_file())
+      continue;
     AssetMetadata m{};
-    m.virtual_path = (std::filesystem::path(std::string(virtual_dir)) /
-                      entry.path().filename()).generic_string();
+    m.virtual_path = (std::filesystem::path(std::string(virtual_dir)) / entry.path().filename())
+                         .generic_string();
     m.type = type_from_extension(entry.path().extension().string());
     m.size_bytes = entry.file_size(ec);
     out.push_back(std::move(m));

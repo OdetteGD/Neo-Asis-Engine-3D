@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Neo-Asis gameplay assembly.
+
+    Compiled ahead of time with NativeAOT into a plain shared library
+    (libneoasis_scripts.so). The engine dlopen()s it and resolves three
+    exported symbols — no JIT, no Mono runtime, no reflection at startup.
+
+    Android:  dotnet publish -r linux-bionic-arm64 -c Release
+    Desktop:  dotnet publish -r linux-x64 -c Release
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>neoasis_scripts</AssemblyName>
+    <RootNamespace>NeoAsis.Scripting</RootNamespace>
+
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- NativeAOT: this is what makes the output a .so the engine can dlopen. -->
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <SelfContained>true</SelfContained>
+
+    <!-- Size + startup matter on a phone. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <StripSymbols>true</StripSymbols>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <IlcGenerateStackTraceData>false</IlcGenerateStackTraceData>
+  </PropertyGroup>
+
+</Project>

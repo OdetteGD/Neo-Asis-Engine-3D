@@ -6,41 +6,73 @@
 #include <cstring>
 #include <unordered_set>
 
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+#  include <X11/Xlib.h>
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+struct wl_display;
+struct wl_surface;
+#endif
+
 namespace neo {
 
 const char* vk_result_name(VkResult r) {
   switch (r) {
-    case VK_SUCCESS: return "VK_SUCCESS";
-    case VK_NOT_READY: return "VK_NOT_READY";
-    case VK_TIMEOUT: return "VK_TIMEOUT";
-    case VK_EVENT_SET: return "VK_EVENT_SET";
-    case VK_EVENT_RESET: return "VK_EVENT_RESET";
-    case VK_INCOMPLETE: return "VK_INCOMPLETE";
-    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-    case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-    case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
-    case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
-    case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
-    case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
-    case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
-    default: return "VK_RESULT_UNRECOGNISED";
+  case VK_SUCCESS:
+    return "VK_SUCCESS";
+  case VK_NOT_READY:
+    return "VK_NOT_READY";
+  case VK_TIMEOUT:
+    return "VK_TIMEOUT";
+  case VK_EVENT_SET:
+    return "VK_EVENT_SET";
+  case VK_EVENT_RESET:
+    return "VK_EVENT_RESET";
+  case VK_INCOMPLETE:
+    return "VK_INCOMPLETE";
+  case VK_ERROR_OUT_OF_HOST_MEMORY:
+    return "VK_ERROR_OUT_OF_HOST_MEMORY";
+  case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+    return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+  case VK_ERROR_INITIALIZATION_FAILED:
+    return "VK_ERROR_INITIALIZATION_FAILED";
+  case VK_ERROR_DEVICE_LOST:
+    return "VK_ERROR_DEVICE_LOST";
+  case VK_ERROR_MEMORY_MAP_FAILED:
+    return "VK_ERROR_MEMORY_MAP_FAILED";
+  case VK_ERROR_LAYER_NOT_PRESENT:
+    return "VK_ERROR_LAYER_NOT_PRESENT";
+  case VK_ERROR_EXTENSION_NOT_PRESENT:
+    return "VK_ERROR_EXTENSION_NOT_PRESENT";
+  case VK_ERROR_FEATURE_NOT_PRESENT:
+    return "VK_ERROR_FEATURE_NOT_PRESENT";
+  case VK_ERROR_INCOMPATIBLE_DRIVER:
+    return "VK_ERROR_INCOMPATIBLE_DRIVER";
+  case VK_ERROR_TOO_MANY_OBJECTS:
+    return "VK_ERROR_TOO_MANY_OBJECTS";
+  case VK_ERROR_FORMAT_NOT_SUPPORTED:
+    return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+  case VK_ERROR_FRAGMENTED_POOL:
+    return "VK_ERROR_FRAGMENTED_POOL";
+  case VK_ERROR_SURFACE_LOST_KHR:
+    return "VK_ERROR_SURFACE_LOST_KHR";
+  case VK_ERROR_OUT_OF_DATE_KHR:
+    return "VK_ERROR_OUT_OF_DATE_KHR";
+  case VK_SUBOPTIMAL_KHR:
+    return "VK_SUBOPTIMAL_KHR";
+  case VK_ERROR_UNKNOWN:
+    return "VK_ERROR_UNKNOWN";
+  default:
+    return "VK_RESULT_UNRECOGNISED";
   }
 }
 
 namespace {
 
-VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
-    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                              VkDebugUtilsMessageTypeFlagsEXT type,
+                                              const VkDebugUtilsMessengerCallbackDataEXT* data,
+                                              void*) {
   const bool is_error = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
   const bool is_warn = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0;
   const bool is_perf = (type & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) != 0;
@@ -56,8 +88,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
 }
 
 bool has_extension(const std::vector<VkExtensionProperties>& all, const char* name) {
-  return std::any_of(all.begin(), all.end(),
-                     [&](const VkExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
+  return std::any_of(all.begin(), all.end(), [&](const VkExtensionProperties& e) {
+    return std::strcmp(e.extensionName, name) == 0;
+  });
 }
 
 } // namespace
@@ -76,9 +109,11 @@ VulkanContext::~VulkanContext() {
   if (debug_messenger_ != VK_NULL_HANDLE) {
     auto destroy = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
         vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
-    if (destroy) destroy(instance_, debug_messenger_, nullptr);
+    if (destroy)
+      destroy(instance_, debug_messenger_, nullptr);
   }
-  if (instance_ != VK_NULL_HANDLE) vkDestroyInstance(instance_, nullptr);
+  if (instance_ != VK_NULL_HANDLE)
+    vkDestroyInstance(instance_, nullptr);
 }
 
 std::unique_ptr<VulkanContext> VulkanContext::create(const DeviceDesc& desc) {
@@ -140,7 +175,8 @@ void VulkanContext::create_instance(const DeviceDesc& desc) {
 #elif defined(__linux__)
   extensions.push_back(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
 #endif
-  for (const char* e : desc.extra_instance_extensions) extensions.push_back(e);
+  for (const char* e : desc.extra_instance_extensions)
+    extensions.push_back(e);
 
   u32 ext_count = 0;
   vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, nullptr);
@@ -168,7 +204,8 @@ void VulkanContext::create_instance(const DeviceDesc& desc) {
   }
 
   std::vector<const char*> layers;
-  if (validation_enabled_) layers.push_back("VK_LAYER_KHRONOS_validation");
+  if (validation_enabled_)
+    layers.push_back("VK_LAYER_KHRONOS_validation");
 
   VkInstanceCreateInfo ci{};
   ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -180,7 +217,8 @@ void VulkanContext::create_instance(const DeviceDesc& desc) {
 
   const VkResult r = vkCreateInstance(&ci, nullptr, &instance_);
   if (r != VK_SUCCESS) {
-    NEO_FATAL(kGfx, "vkCreateInstance failed: {}. Is a Vulkan driver installed?", vk_result_name(r));
+    NEO_FATAL(kGfx, "vkCreateInstance failed: {}. Is a Vulkan driver installed?",
+              vk_result_name(r));
   }
   volkLoadInstance(instance_);
 
@@ -195,14 +233,16 @@ void VulkanContext::create_instance(const DeviceDesc& desc) {
     dci.pfnUserCallback = debug_callback;
     auto create_dbg = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
         vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT"));
-    if (create_dbg) create_dbg(instance_, &dci, nullptr, &debug_messenger_);
+    if (create_dbg)
+      create_dbg(instance_, &dci, nullptr, &debug_messenger_);
   }
 }
 
 void VulkanContext::pick_physical_device(const DeviceDesc& desc) {
   u32 count = 0;
   NEO_VK_CHECK(vkEnumeratePhysicalDevices(instance_, &count, nullptr));
-  if (count == 0) NEO_FATAL(kGfx, "No Vulkan-capable physical device found");
+  if (count == 0)
+    NEO_FATAL(kGfx, "No Vulkan-capable physical device found");
 
   std::vector<VkPhysicalDevice> devices(count);
   NEO_VK_CHECK(vkEnumeratePhysicalDevices(instance_, &count, devices.data()));
@@ -217,15 +257,26 @@ void VulkanContext::pick_physical_device(const DeviceDesc& desc) {
     // Android: API level matters more than raw "discrete" heuristics.
     i16 score = 0;
     switch (p.deviceType) {
-      case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: score = desc.prefer_discrete_gpu ? 1000 : 400; break;
-      case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 700; break;
-      case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: score = 300; break;
-      default: score = 100; break;
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+      score = desc.prefer_discrete_gpu ? 1000 : 400;
+      break;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+      score = 700;
+      break;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+      score = 300;
+      break;
+    default:
+      score = 100;
+      break;
     }
-    if (p.apiVersion < VK_API_VERSION_1_1) score -= 500;
-    if (p.limits.maxComputeWorkGroupInvocations < 128) score -= 200;
+    if (p.apiVersion < VK_API_VERSION_1_1)
+      score -= 500;
+    if (p.limits.maxComputeWorkGroupInvocations < 128)
+      score -= 200;
     // Prefer tile-friendly hardware with a decent memory budget.
-    if (p.limits.maxStorageBufferRange >= (256u << 20)) score += 50;
+    if (p.limits.maxStorageBufferRange >= (256u << 20))
+      score += 50;
 
     NEO_INFO(kGfx, "  [{}] {} (API {}.{}.{}, type {}, score {})", dev == best ? "*" : " ",
              p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion),
@@ -252,13 +303,16 @@ void VulkanContext::pick_physical_device(const DeviceDesc& desc) {
   compute_family_ = ~0u;
   for (u32 i = 0; i < families; ++i) {
     const VkQueueFlags f = fprops[i].queueFlags;
-    if ((f & VK_QUEUE_GRAPHICS_BIT) && graphics_family_ == ~0u) graphics_family_ = i;
+    if ((f & VK_QUEUE_GRAPHICS_BIT) && graphics_family_ == ~0u)
+      graphics_family_ = i;
     if ((f & VK_QUEUE_COMPUTE_BIT) && graphics_family_ != i && compute_family_ == ~0u) {
       compute_family_ = i;
     }
   }
-  if (graphics_family_ == ~0u) NEO_FATAL(kGfx, "Device has no graphics queue family");
-  if (compute_family_ == ~0u) compute_family_ = graphics_family_;
+  if (graphics_family_ == ~0u)
+    NEO_FATAL(kGfx, "Device has no graphics queue family");
+  if (compute_family_ == ~0u)
+    compute_family_ = graphics_family_;
 
   NEO_INFO(kGfx, "Selected: {} — graphics queue {}, compute queue {}", props_.deviceName,
            graphics_family_, compute_family_);
@@ -290,14 +344,9 @@ void VulkanContext::query_features() {
   features_.max_anisotropy_supported = f2.features.samplerAnisotropy == VK_TRUE;
   features_.max_push_constants = props_.limits.maxPushConstantsSize;
 
-  VkPhysicalDeviceProperties2 p2{};
-  p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-  VkPhysicalDeviceVulkan11Properties pr11{};
-  pr11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
-  p2.pNext = &pr11;
-  vkGetPhysicalDeviceProperties2(physical_device_, &p2);
-  features_.min_uniform_buffer_alignment = pr11.minUniformBufferOffsetAlignment;
-  features_.min_storage_buffer_alignment = pr11.minStorageBufferOffsetAlignment;
+  // These live on VkPhysicalDeviceLimits (core 1.0), not the 1.1 structs.
+  features_.min_uniform_buffer_alignment = props_.limits.minUniformBufferOffsetAlignment;
+  features_.min_storage_buffer_alignment = props_.limits.minStorageBufferOffsetAlignment;
 
   // Texture formats that matter for mobile memory bandwidth.
   auto supports = [&](VkFormat fmt) {
@@ -305,10 +354,10 @@ void VulkanContext::query_features() {
     vkGetPhysicalDeviceFormatProperties(physical_device_, fmt, &fp);
     return (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
   };
-  features_.astc_ldr = supports(VK_FORMAT_ASTC_4x4_UNORM_BLOCK) &&
-                       supports(VK_FORMAT_ASTC_4x4_SRGB_BLOCK);
-  features_.etc2 = supports(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK) &&
-                   supports(VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK);
+  features_.astc_ldr =
+      supports(VK_FORMAT_ASTC_4x4_UNORM_BLOCK) && supports(VK_FORMAT_ASTC_4x4_SRGB_BLOCK);
+  features_.etc2 =
+      supports(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK) && supports(VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK);
 
   NEO_INFO(kGfx, "Features: dynamicRendering={} sync2={} timeline={} bindless={} astc={} etc2={}",
            features_.dynamic_rendering, features_.synchronization2, features_.timeline_semaphore,
@@ -328,21 +377,24 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
       VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME,
       VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
   };
-  for (const char* e : desc.extra_device_extensions) device_exts.push_back(e);
+  for (const char* e : desc.extra_device_extensions)
+    device_exts.push_back(e);
 
   u32 n = 0;
   vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &n, nullptr);
   std::vector<VkExtensionProperties> avail(n);
   vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &n, avail.data());
   for (const char* e : optional) {
-    if (has_extension(avail, e)) device_exts.push_back(e);
+    if (has_extension(avail, e))
+      device_exts.push_back(e);
   }
 
   // --- Queue creation -----------------------------------------------------
   std::vector<u32> families{graphics_family_};
-  if (compute_family_ != graphics_family_) families.push_back(compute_family_);
-  if (present_family_ != ~0u && std::find(families.begin(), families.end(), present_family_) ==
-                                      families.end()) {
+  if (compute_family_ != graphics_family_)
+    families.push_back(compute_family_);
+  if (present_family_ != ~0u &&
+      std::find(families.begin(), families.end(), present_family_) == families.end()) {
     families.push_back(present_family_);
   }
 
@@ -352,7 +404,8 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &families_available, nullptr);
     std::vector<VkQueueFamilyProperties> fp(families_available);
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &families_available, fp.data());
-    for (u32 f : families) total_queues += std::max(1u, fp[f].queueCount > 2 ? 2u : 1u);
+    for (u32 f : families)
+      total_queues += std::max(1u, fp[f].queueCount > 2 ? 2u : 1u);
   }
 
   const f32 priority = 1.0f;
@@ -406,10 +459,10 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
   f2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
   // --- Choose API version -------------------------------------------------
-  const u32 api = VK_API_VERSION_MAJOR(props_.apiVersion) > 1 ||
-                          VK_API_VERSION_MINOR(props_.apiVersion) >= 3
-                      ? VK_API_VERSION_1_3
-                      : VK_API_VERSION_1_2;
+  const u32 api =
+      VK_API_VERSION_MAJOR(props_.apiVersion) > 1 || VK_API_VERSION_MINOR(props_.apiVersion) >= 3
+          ? VK_API_VERSION_1_3
+          : VK_API_VERSION_1_2;
 
   VkDeviceCreateInfo ci{};
   ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -431,7 +484,8 @@ void VulkanContext::create_logical_device(const DeviceDesc& desc) {
 
   vkGetDeviceQueue(device_, graphics_family_, 0, &graphics_queue_);
   vkGetDeviceQueue(device_, compute_family_, 0, &compute_queue_);
-  if (present_family_ == ~0u) present_family_ = graphics_family_;
+  if (present_family_ == ~0u)
+    present_family_ = graphics_family_;
   vkGetDeviceQueue(device_, present_family_, 0, &present_queue_);
 
   NEO_INFO(kGfx, "Logical device ready. Push constants: {} bytes. UB alignment: {}",
@@ -452,7 +506,7 @@ void VulkanContext::create_surface(void* native_display, void* native_window) {
   si.display = reinterpret_cast<wl_display*>(native_display);
   si.surface = reinterpret_cast<wl_surface*>(native_window);
   NEO_VK_CHECK(vkCreateWaylandSurfaceKHR(instance_, &si, nullptr, &surface_));
-#elif defined(__linux__)
+#elif defined(VK_USE_PLATFORM_XLIB_KHR)
   VkXlibSurfaceCreateInfoKHR si{};
   si.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
   si.dpy = reinterpret_cast<Display*>(native_display);
@@ -481,20 +535,22 @@ void VulkanContext::create_surface(void* native_display, void* native_window) {
       }
     }
   }
-  if (present_family_ == ~0u) NEO_FATAL(kGfx, "No queue family can present to this surface");
+  if (present_family_ == ~0u)
+    NEO_FATAL(kGfx, "No queue family can present to this surface");
 
   NEO_INFO(kGfx, "Surface created; present queue family {}", present_family_);
 }
 
 bool VulkanContext::surface_supported_by_queue_family(u32 family) const {
-  if (surface_ == VK_NULL_HANDLE) return false;
+  if (surface_ == VK_NULL_HANDLE)
+    return false;
   VkBool32 supported = VK_FALSE;
   vkGetPhysicalDeviceSurfaceSupportKHR(physical_device_, family, surface_, &supported);
   return supported == VK_TRUE;
 }
 
-VkSurfaceFormatKHR VulkanContext::choose_surface_format(
-    const std::vector<VkSurfaceFormatKHR>& available) const {
+VkSurfaceFormatKHR
+VulkanContext::choose_surface_format(const std::vector<VkSurfaceFormatKHR>& available) const {
   // Preference order is bandwidth-driven for mobile:
   //   RGB10A2 (no shader-side dither, 4 bytes) > BGRA8 SRGB > first reported.
   const VkFormat preferred[] = {
@@ -504,7 +560,8 @@ VkSurfaceFormatKHR VulkanContext::choose_surface_format(
   };
   for (VkFormat want : preferred) {
     for (const auto& f : available) {
-      if (f.format == want && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return f;
+      if (f.format == want && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        return f;
     }
   }
   if (available.size() == 1 && available[0].format == VK_FORMAT_UNDEFINED) {
@@ -519,18 +576,20 @@ VkSurfaceFormatKHR VulkanContext::choose_surface_format(
 std::optional<u32> VulkanContext::find_memory_type(u32 type_bits,
                                                    VkMemoryPropertyFlags flags) const {
   for (u32 i = 0; i < mem_props_.memoryTypeCount; ++i) {
-    if ((type_bits & (1u << i)) &&
-        (mem_props_.memoryTypes[i].propertyFlags & flags) == flags) {
+    if ((type_bits & (1u << i)) && (mem_props_.memoryTypes[i].propertyFlags & flags) == flags) {
       return i;
     }
   }
   return std::nullopt;
 }
 
-void VulkanContext::wait_idle() { vkDeviceWaitIdle(device_); }
+void VulkanContext::wait_idle() {
+  vkDeviceWaitIdle(device_);
+}
 
 void VulkanContext::set_object_name(u64 handle, VkObjectType type, const char* name) const {
-  if (!validation_enabled_) return;
+  if (!validation_enabled_)
+    return;
   VkDebugUtilsObjectNameInfoEXT info{};
   info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
   info.objectType = type;
@@ -538,11 +597,13 @@ void VulkanContext::set_object_name(u64 handle, VkObjectType type, const char* n
   info.pObjectName = name;
   auto fn = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
       vkGetDeviceProcAddr(device_, "vkSetDebugUtilsObjectNameEXT"));
-  if (fn) fn(device_, &info);
+  if (fn)
+    fn(device_, &info);
 }
 
 void VulkanContext::begin_debug_label(VkCommandBuffer cmd, const char* name, vec4 color) const {
-  if (!validation_enabled_) return;
+  if (!validation_enabled_)
+    return;
   VkDebugUtilsLabelEXT label{};
   label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
   label.pLabelName = name;
@@ -552,14 +613,17 @@ void VulkanContext::begin_debug_label(VkCommandBuffer cmd, const char* name, vec
   label.color[3] = color.a;
   auto fn = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
       vkGetDeviceProcAddr(device_, "vkCmdBeginDebugUtilsLabelEXT"));
-  if (fn) fn(cmd, &label);
+  if (fn)
+    fn(cmd, &label);
 }
 
 void VulkanContext::end_debug_label(VkCommandBuffer cmd) const {
-  if (!validation_enabled_) return;
+  if (!validation_enabled_)
+    return;
   auto fn = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
       vkGetDeviceProcAddr(device_, "vkCmdEndDebugUtilsLabelEXT"));
-  if (fn) fn(cmd);
+  if (fn)
+    fn(cmd);
 }
 
 } // namespace neo

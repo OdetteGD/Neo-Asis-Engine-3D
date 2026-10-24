@@ -14,8 +14,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <thread>
 #include <cstring>
+#include <thread>
 
 namespace neo {
 
@@ -43,14 +43,14 @@ public:
   explicit DesktopPlatform(const WindowDesc& desc) : desc_(desc) {}
 
   ~DesktopPlatform() override {
-    if (window_) glfwDestroyWindow(window_);
+    if (window_)
+      glfwDestroyWindow(window_);
     glfwTerminate();
   }
 
   bool init() {
-    glfwSetErrorCallback([](int code, const char* msg) {
-      NEO_ERROR(kPlatform, "GLFW error {}: {}", code, msg);
-    });
+    glfwSetErrorCallback(
+        [](int code, const char* msg) { NEO_ERROR(kPlatform, "GLFW error {}: {}", code, msg); });
 
     if (!glfwInit()) {
       NEO_ERROR(kPlatform, "glfwInit failed (no display?)");
@@ -88,7 +88,8 @@ public:
 
     glfwPollEvents();
 
-    if (glfwWindowShouldClose(window_)) return false;
+    if (glfwWindowShouldClose(window_))
+      return false;
 
     // Accumulate mouse delta from the cursor callback position history.
     if (has_cursor_) {
@@ -125,11 +126,11 @@ public:
 
   NativeWindow native_window() const override {
     NativeWindow nw{};
-#if defined(__linux__)
+#  if defined(__linux__)
     nw.connection = glfwGetX11Display();
     nw.window = reinterpret_cast<void*>(static_cast<uintptr_t>(glfwGetX11Window(window_)));
     nw.display = glfwGetX11Display();
-#endif
+#  endif
     return nw;
   }
 
@@ -154,13 +155,15 @@ private:
       auto* self = static_cast<DesktopPlatform*>(glfwGetWindowUserPointer(w));
       self->width_ = static_cast<u32>(width);
       self->height_ = static_cast<u32>(height);
-      if (self->callback_) self->callback_(AppEvent::Resize, self->width_, self->height_);
+      if (self->callback_)
+        self->callback_(AppEvent::Resize, self->width_, self->height_);
     });
 
     glfwSetWindowCloseCallback(window_, [](GLFWwindow* w) {
       auto* self = static_cast<DesktopPlatform*>(glfwGetWindowUserPointer(w));
       self->quit_ = true;
-      if (self->callback_) self->callback_(AppEvent::Quit, self->width_, self->height_);
+      if (self->callback_)
+        self->callback_(AppEvent::Quit, self->width_, self->height_);
     });
 
     glfwSetWindowFocusCallback(window_, [](GLFWwindow* w, int focused) {
@@ -174,7 +177,8 @@ private:
     glfwSetKeyCallback(window_, [](GLFWwindow* w, int key, int, int action, int) {
       auto* self = static_cast<DesktopPlatform*>(glfwGetWindowUserPointer(w));
       const auto k = static_cast<Key>(key);
-      if (k >= Key::Count) return;
+      if (k >= Key::Count)
+        return;
       if (action == GLFW_PRESS) {
         self->input_.down[static_cast<usize>(k)] = true;
         self->input_.pressed_this_frame.push_back(k);
@@ -224,7 +228,8 @@ private:
 
 std::unique_ptr<Platform> Platform::create(const WindowDesc& desc) {
   auto p = std::make_unique<DesktopPlatform>(desc);
-  if (!p->init()) return nullptr;
+  if (!p->init())
+    return nullptr;
   return p;
 }
 

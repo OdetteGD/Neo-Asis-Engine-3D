@@ -51,9 +51,7 @@ struct Transform {
     return glm::translate(mat4(1.0f), position) * glm::mat4_cast(rotation) *
            glm::scale(mat4(1.0f), scale);
   }
-  [[nodiscard]] mat4 inverse_matrix() const {
-    return glm::inverse(matrix());
-  }
+  [[nodiscard]] mat4 inverse_matrix() const { return glm::inverse(matrix()); }
   [[nodiscard]] vec3 forward() const { return rotation * vec3(0.0f, 0.0f, -1.0f); }
   [[nodiscard]] vec3 right() const { return rotation * vec3(1.0f, 0.0f, 0.0f); }
   [[nodiscard]] vec3 up() const { return rotation * vec3(0.0f, 1.0f, 0.0f); }
@@ -109,8 +107,8 @@ struct Aabb {
   return m;
 }
 
-[[nodiscard]] inline mat4 orthographic_zo(f32 left, f32 right, f32 bottom, f32 top,
-                                          f32 near_plane, f32 far_plane) {
+[[nodiscard]] inline mat4 orthographic_zo(f32 left, f32 right, f32 bottom, f32 top, f32 near_plane,
+                                          f32 far_plane) {
   return glm::orthoZO(left, right, bottom, top, near_plane, far_plane);
 }
 
@@ -120,11 +118,12 @@ struct Aabb {
 
 // --- Culling ---------------------------------------------------------------
 struct Frustum {
-  vec4 planes[6];  // xyz = normal, w = distance; positive side is inside
+  vec4 planes[6]; // xyz = normal, w = distance; positive side is inside
 
   [[nodiscard]] bool intersects_sphere(const vec3& center, f32 radius) const {
     for (const vec4& p : planes) {
-      if (glm::dot(vec3(p), center) + p.w < -radius) return false;
+      if (glm::dot(vec3(p), center) + p.w < -radius)
+        return false;
     }
     return true;
   }

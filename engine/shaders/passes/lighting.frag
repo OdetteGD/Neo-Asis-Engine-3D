@@ -15,12 +15,17 @@
 #include "common/pbr.glsl"
 #include "common/atmosphere.glsl"
 
-layout(set = 1, binding = 0) uniform sampler2D uGBufferAlbedo;
-layout(set = 1, binding = 1) uniform sampler2D uGBufferNormal;
-layout(set = 1, binding = 2) uniform sampler2D uGBufferEmissive;
-layout(set = 1, binding = 3) uniform sampler2D uDepth;
-layout(set = 1, binding = 4) uniform sampler2D uClouds;
-layout(set = 1, binding = 5) uniform sampler2D uIrradiance;
+// set 2: G-buffer + depth + volumetric clouds
+layout(set = 2, binding = 0) uniform sampler2D uGBufferAlbedo;
+layout(set = 2, binding = 1) uniform sampler2D uGBufferNormal;
+layout(set = 2, binding = 2) uniform sampler2D uGBufferEmissive;
+layout(set = 2, binding = 3) uniform sampler2D uDepth;
+layout(set = 2, binding = 4) uniform sampler2D uClouds;
+
+// set 3: image-based lighting (baked by IBLBaker)
+layout(set = 3, binding = 0) uniform samplerCube uIrradiance;
+layout(set = 3, binding = 1) uniform samplerCube uPrefiltered;
+layout(set = 3, binding = 2) uniform sampler2D uBRDFLUT;
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
@@ -137,21 +142,16 @@ void main() {
   }
 
   // --- Ambient / IBL ------------------------------------------------------
-  vec3 irradiance = texture(uIrradiance, vec3(N.x, N.z, 0.0).xy * 0.5 + 0.5).rgb;
-  if (length(irradiance) < 1e-4) {
-    // Fallback when the baker has not run yet: hemisphere ambient.
-    irradiance = mix(vec3(0.05, 0.06, 0.08), vec3(0.28, 0.36, 0.5), N.y * 0.5 + 0.5);
-  }
+  // Diffuse IBL from the baked irradiance cube.
+  const vec3 irradiance = texture(uIrradiance, N).rgb;
 
-  // Split-sum lookup uses a compact analytic fit for the BRDF LUT (r, g) with
-  // no texture fetch, which is measurably cheaper on tile-based GPUs.
-  float NoV4 = NoV * NoV * NoV * NoV;
-  float a = roughness;
-  float brdf_x = mix(1.0, 1.0 - a * 0.72, NoV4);
-  float brdf_y = a * 0.28 * (1.0 - NoV4);
+  // Specular IBL: prefiltered chain sampled at the roughness mip, times the
+  // split-sum BRDF term from the baked LUT.
+  const float max_lod = float(textureQueryLevels(uPrefiltered) - 1);
+  const vec3 prefiltered = textureLod(uPrefiltered, reflect(-V, N), roughness * max_lod).rgb;
+  const vec2 brdf = texture(uBRDFLUT, vec2(NoV, roughness)).rg;
 
-  vec3 ambient = evaluate_ibl(f0, roughness, metallic, N, V, irradiance, irradiance,
-                              vec2(brdf_x, brdf_y));
+  vec3 ambient = evaluate_ibl(f0, roughness, metallic, N, V, irradiance, prefiltered, brdf);
   ambient *= occlusion;
 
   vec3 color = direct + ambient + emissive.rgb;

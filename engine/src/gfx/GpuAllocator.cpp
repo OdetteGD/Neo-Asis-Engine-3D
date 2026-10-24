@@ -14,8 +14,9 @@ std::unique_ptr<GpuAllocator> GpuAllocator::create(const GpuAllocatorDesc& desc)
   a->device_ = desc.device;
 
   VmaVulkanFunctions funcs{};
-  funcs.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
-  funcs.vkGetDeviceProcAddr = &vkGetDeviceProcAddr;
+  // volk exposes these as function pointers, so pass the pointer itself.
+  funcs.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+  funcs.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
 
   VmaAllocatorCreateInfo ci{};
   ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
@@ -54,25 +55,24 @@ bool GpuAllocator::create_buffer(const BufferDesc& desc, VkBuffer& out_buffer,
 
   VmaAllocationCreateInfo aci{};
   switch (desc.memory) {
-    case MemoryClass::DeviceLocal:
-      aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-      break;
-    case MemoryClass::DeviceLocalHostVisible:
-      aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-      aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                  VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
-                  VMA_ALLOCATION_CREATE_MAPPED_BIT;
-      break;
-    case MemoryClass::Upload:
-      aci.usage = VMA_MEMORY_USAGE_AUTO;
-      aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                  VMA_ALLOCATION_CREATE_MAPPED_BIT;
-      break;
-    case MemoryClass::Readback:
-      aci.usage = VMA_MEMORY_USAGE_AUTO;
-      aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                  VMA_ALLOCATION_CREATE_MAPPED_BIT;
-      break;
+  case MemoryClass::DeviceLocal:
+    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    break;
+  case MemoryClass::DeviceLocalHostVisible:
+    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    break;
+  case MemoryClass::Upload:
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    aci.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    break;
+  case MemoryClass::Readback:
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    break;
   }
 
   VmaAllocationInfo info{};
@@ -108,8 +108,9 @@ bool GpuAllocator::create_image(const ImageDesc& desc, VkImage& out_image,
   ici.usage = desc.usage;
   ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  if (desc.type == VK_IMAGE_TYPE_CUBE ||
-      (desc.array_layers == 6 && desc.usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+  // Vulkan has no cube image type: a cube is a 6-layer 2D array flagged
+  // cube-compatible.
+  if (desc.type == VK_IMAGE_TYPE_2D && desc.array_layers == 6) {
     ici.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   }
 
@@ -146,11 +147,13 @@ f32 GpuAllocator::budget_fraction_used() const {
   vmaGetHeapBudgets(allocator_, budgets);
   const VkPhysicalDeviceMemoryProperties* mp = nullptr;
   vmaGetMemoryProperties(allocator_, &mp);
-  if (!mp) return 0.0f;
+  if (!mp)
+    return 0.0f;
 
   f64 used = 0.0, total = 0.0;
   for (u32 i = 0; i < mp->memoryHeapCount; ++i) {
-    if ((mp->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) continue;
+    if ((mp->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0)
+      continue;
     used += static_cast<f64>(budgets[i].usage);
     total += static_cast<f64>(budgets[i].budget);
   }
@@ -160,8 +163,7 @@ f32 GpuAllocator::budget_fraction_used() const {
 void GpuAllocator::log_stats(std::string_view label) const {
   VmaTotalStatistics stats{};
   vmaCalculateStatistics(allocator_, &stats);
-  NEO_INFO(kGfx,
-           "GPU memory [{}]: {:.1f} MiB in {} allocations ({} blocks), budget used {:.0f}%",
+  NEO_INFO(kGfx, "GPU memory [{}]: {:.1f} MiB in {} allocations ({} blocks), budget used {:.0f}%",
            label, static_cast<f64>(stats.total.statistics.allocationBytes) / (1024.0 * 1024.0),
            stats.total.statistics.allocationCount, stats.total.statistics.blockCount,
            static_cast<f64>(budget_fraction_used()) * 100.0);

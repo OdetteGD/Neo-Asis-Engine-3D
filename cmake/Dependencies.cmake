@@ -12,8 +12,12 @@ FetchContent_Declare(vulkan_headers
   GIT_TAG        v1.3.290
   GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(vulkan_headers)
-add_library(Vulkan::Headers INTERFACE IMPORTED)
-target_include_directories(Vulkan::Headers INTERFACE ${vulkan_headers_SOURCE_DIR}/include)
+# Vulkan-Headers already exports Vulkan::Headers; only create it when a distro
+# package or an older tag did not.
+if(NOT TARGET Vulkan::Headers)
+  add_library(Vulkan::Headers INTERFACE IMPORTED)
+  target_include_directories(Vulkan::Headers INTERFACE ${vulkan_headers_SOURCE_DIR}/include)
+endif()
 
 # --- volk: meta-loader for Vulkan ------------------------------------------
 FetchContent_Declare(volk
@@ -22,6 +26,10 @@ FetchContent_Declare(volk
   GIT_SHALLOW    TRUE)
 set(VOLK_STATIC_DEFINE ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(volk)
+# volk includes <vulkan/vulkan.h> but does not pull in the headers target.
+if(TARGET volk AND TARGET Vulkan::Headers)
+  target_link_libraries(volk PUBLIC Vulkan::Headers)
+endif()
 
 # --- VulkanMemoryAllocator -------------------------------------------------
 FetchContent_Declare(vma
@@ -29,9 +37,11 @@ FetchContent_Declare(vma
   GIT_TAG        v3.1.0
   GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(vma)
-add_library(GPUOpen::VulkanMemoryAllocator INTERFACE IMPORTED)
-target_include_directories(GPUOpen::VulkanMemoryAllocator INTERFACE
-  ${vma_SOURCE_DIR}/include)
+if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+  add_library(GPUOpen::VulkanMemoryAllocator INTERFACE IMPORTED)
+  target_include_directories(GPUOpen::VulkanMemoryAllocator INTERFACE
+    ${vma_SOURCE_DIR}/include)
+endif()
 
 # --- glm -------------------------------------------------------------------
 FetchContent_Declare(glm
@@ -46,8 +56,27 @@ FetchContent_Declare(cgltf
   GIT_TAG        v1.14
   GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(cgltf)
-add_library(cgltf::cgltf INTERFACE IMPORTED)
-target_include_directories(cgltf::cgltf INTERFACE ${cgltf_SOURCE_DIR})
+if(NOT TARGET cgltf::cgltf)
+  add_library(cgltf::cgltf INTERFACE IMPORTED)
+  target_include_directories(cgltf::cgltf INTERFACE ${cgltf_SOURCE_DIR})
+endif()
+
+# --- fmt: std::format is unavailable on GCC < 13 (the CI image ships 11) ---
+FetchContent_Declare(fmt
+  GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+  GIT_TAG        11.0.2
+  GIT_SHALLOW    TRUE)
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+set(FMT_TEST OFF CACHE BOOL "" FORCE)
+set(FMT_DOC OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(fmt)
+
+# --- stb_image: PNG/JPG decode for glTF textures ---------------------------
+FetchContent_Declare(stb
+  GIT_REPOSITORY https://github.com/nothings/stb.git
+  GIT_TAG        master
+  GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(stb)
 
 # --- GLFW: desktop windowing + native handles (desktop only) ---------------
 if(NOT ANDROID)

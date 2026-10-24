@@ -46,7 +46,7 @@ struct RenderableDesc {
 struct SkyDesc {
   f32 elevation_degrees = 18.0f;
   f32 azimuth_degrees = 210.0f;
-  f32 sun_intensity = 110000.0f;  // lux-ish; tonemapping handles the range
+  f32 sun_intensity = 110000.0f; // lux-ish; tonemapping handles the range
   vec3 sun_color = vec3(1.0f, 0.96f, 0.9f);
   f32 angular_radius_degrees = 0.27f;
   f32 turbidity = 2.5f;

@@ -26,14 +26,16 @@ VkPipelineShaderStageCreateInfo stage_info(VkShaderStageFlagBits stage, VkShader
 
 std::string resolve_shader_path(std::string_view relative) {
   std::string rel(relative);
-  if (rel.size() < 5 || rel.substr(rel.size() - 4) != kSpvExtension) rel += kSpvExtension;
+  if (rel.size() < 5 || rel.substr(rel.size() - 4) != kSpvExtension)
+    rel += kSpvExtension;
 
 #if defined(NEO_SHADER_IN_ASSETS)
   // Android: shaders are packed under assets/shaders and read through AAsset.
   return std::string("shaders/") + rel;
 #else
   std::string base = NEO_SHADER_DIR;
-  if (base.empty()) base = "shaders";
+  if (base.empty())
+    base = "shaders";
   return base + "/" + rel;
 #endif
 }
@@ -46,11 +48,13 @@ PipelineCache::PipelineCache(VulkanContext& ctx) : ctx_(ctx) {
 
 PipelineCache::~PipelineCache() {
   release_all();
-  for (VkPipelineLayout l : layouts_) vkDestroyPipelineLayout(ctx_.device(), l, nullptr);
+  for (VkPipelineLayout l : layouts_)
+    vkDestroyPipelineLayout(ctx_.device(), l, nullptr);
   for (VkDescriptorSetLayout l : set_layouts_) {
     vkDestroyDescriptorSetLayout(ctx_.device(), l, nullptr);
   }
-  if (cache_ != VK_NULL_HANDLE) vkDestroyPipelineCache(ctx_.device(), cache_, nullptr);
+  if (cache_ != VK_NULL_HANDLE)
+    vkDestroyPipelineCache(ctx_.device(), cache_, nullptr);
 }
 
 std::vector<u32> PipelineCache::read_spirv(const std::string& relative_path) {
@@ -76,10 +80,12 @@ std::vector<u32> PipelineCache::read_spirv(const std::string& relative_path) {
 }
 
 VkShaderModule PipelineCache::load(const std::string& relative_path) {
-  if (auto it = modules_.find(relative_path); it != modules_.end()) return it->second;
+  if (auto it = modules_.find(relative_path); it != modules_.end())
+    return it->second;
 
   const std::vector<u32> code = read_spirv(relative_path);
-  if (code.empty()) return VK_NULL_HANDLE;
+  if (code.empty())
+    return VK_NULL_HANDLE;
 
   VkShaderModuleCreateInfo ci{};
   ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -99,14 +105,17 @@ VkShaderModule PipelineCache::load(const std::string& relative_path) {
 }
 
 void PipelineCache::release_all() {
-  for (VkPipeline p : pipelines_) vkDestroyPipeline(ctx_.device(), p, nullptr);
+  for (VkPipeline p : pipelines_)
+    vkDestroyPipeline(ctx_.device(), p, nullptr);
   pipelines_.clear();
-  for (auto& [path, mod] : modules_) vkDestroyShaderModule(ctx_.device(), mod, nullptr);
+  for (auto& [path, mod] : modules_)
+    vkDestroyShaderModule(ctx_.device(), mod, nullptr);
   modules_.clear();
 }
 
-VkDescriptorSetLayout PipelineCache::create_set_layout(
-    const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayoutCreateFlags flags) {
+VkDescriptorSetLayout
+PipelineCache::create_set_layout(const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+                                 VkDescriptorSetLayoutCreateFlags flags) {
   std::vector<VkDescriptorBindingFlags> binding_flags(bindings.size(),
                                                       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
   VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci{};
@@ -132,8 +141,7 @@ VkDescriptorSetLayout PipelineCache::create_set_layout(
 }
 
 VkPipelineLayout PipelineCache::create_layout(std::vector<VkDescriptorSetLayout> sets,
-                                              u32 push_constant_size,
-                                              VkShaderStageFlags stages) {
+                                              u32 push_constant_size, VkShaderStageFlags stages) {
   VkPushConstantRange range{};
   range.stageFlags = stages;
   range.offset = 0;
@@ -297,19 +305,22 @@ VkPipeline PipelineCache::create(const ComputePipelineDesc& desc) {
 }
 
 void PipelineCache::release(VkPipeline pipeline) {
-  if (pipeline == VK_NULL_HANDLE) return;
+  if (pipeline == VK_NULL_HANDLE)
+    return;
   vkDestroyPipeline(ctx_.device(), pipeline, nullptr);
   pipelines_.erase(std::remove(pipelines_.begin(), pipelines_.end(), pipeline), pipelines_.end());
 }
 
 void PipelineCache::release(VkPipelineLayout layout) {
-  if (layout == VK_NULL_HANDLE) return;
+  if (layout == VK_NULL_HANDLE)
+    return;
   vkDestroyPipelineLayout(ctx_.device(), layout, nullptr);
   layouts_.erase(std::remove(layouts_.begin(), layouts_.end(), layout), layouts_.end());
 }
 
 void PipelineCache::release(VkDescriptorSetLayout layout) {
-  if (layout == VK_NULL_HANDLE) return;
+  if (layout == VK_NULL_HANDLE)
+    return;
   vkDestroyDescriptorSetLayout(ctx_.device(), layout, nullptr);
   set_layouts_.erase(std::remove(set_layouts_.begin(), set_layouts_.end(), layout),
                      set_layouts_.end());
@@ -340,7 +351,8 @@ void PipelineCache::save_disk_cache(std::string_view path) const {
     return;
   }
   std::vector<u8> data(size);
-  if (vkGetPipelineCacheData(ctx_.device(), cache_, &size, data.data()) != VK_SUCCESS) return;
+  if (vkGetPipelineCacheData(ctx_.device(), cache_, &size, data.data()) != VK_SUCCESS)
+    return;
   if (assets().write_binary(std::string(path), data)) {
     NEO_INFO(kGfx, "Saved pipeline cache: {:.1f} KiB", static_cast<f64>(size) / 1024.0);
   }

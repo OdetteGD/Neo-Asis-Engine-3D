@@ -24,23 +24,67 @@ struct WindowDesc {
   bool resizable = true;
   bool fullscreen = false;
   bool vsync = true;
-  u32 target_fps = 0;  // 0 = uncapped
+  u32 target_fps = 0; // 0 = uncapped
 };
 
 // Native surface handles, opaque to the engine core.
 struct NativeWindow {
-  void* display = nullptr;  // ANativeWindow* / SDL_Window*
+  void* display = nullptr; // ANativeWindow* / SDL_Window*
   void* connection = nullptr;
-  void* window = nullptr;   // X11 Window / Wayland surface (desktop)
+  void* window = nullptr; // X11 Window / Wayland surface (desktop)
 };
 
 enum class Key : u16 {
   Unknown = 0,
-  A = 'A', B, C, D, E, F, G, H, I, J, K, L, M,
-  N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-  Num0 = '0', Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
-  Escape = 256, Space, Enter, Tab, Backspace, Left, Right, Up, Down,
-  Shift, Ctrl, Alt, Count
+  A = 'A',
+  B,
+  C,
+  D,
+  E,
+  F,
+  G,
+  H,
+  I,
+  J,
+  K,
+  L,
+  M,
+  N,
+  O,
+  P,
+  Q,
+  R,
+  S,
+  T,
+  U,
+  V,
+  W,
+  X,
+  Y,
+  Z,
+  Num0 = '0',
+  Num1,
+  Num2,
+  Num3,
+  Num4,
+  Num5,
+  Num6,
+  Num7,
+  Num8,
+  Num9,
+  Escape = 256,
+  Space,
+  Enter,
+  Tab,
+  Backspace,
+  Left,
+  Right,
+  Up,
+  Down,
+  Shift,
+  Ctrl,
+  Alt,
+  Count
 };
 
 struct InputState {
@@ -60,9 +104,9 @@ enum class AppEvent : u8 {
   Resize,
   FocusGained,
   FocusLost,
-  AppPaused,     // Android onPause / desktop minimise
-  AppResumed,    // Android onResume
-  LowMemory,     // Android onLowMemory / onTrimMemory(RUNNING_CRITICAL)
+  AppPaused,  // Android onPause / desktop minimise
+  AppResumed, // Android onResume
+  LowMemory,  // Android onLowMemory / onTrimMemory(RUNNING_CRITICAL)
   Quit,
 };
 
@@ -75,7 +119,7 @@ public:
   [[nodiscard]] static std::unique_ptr<Platform> create(const WindowDesc& desc);
 
   // --- Frame loop --------------------------------------------------------
-  virtual bool pump_events() = 0;       // false => quit requested
+  virtual bool pump_events() = 0; // false => quit requested
   virtual void present_frame() = 0;
   [[nodiscard]] virtual f64 now_seconds() const = 0;
 

@@ -31,9 +31,9 @@ struct GraphicsPipelineDesc {
   VkShaderModule frag = VK_NULL_HANDLE;
   VkPipelineLayout layout = VK_NULL_HANDLE;
 
-  std::vector<VkFormat> color_formats;   // empty => depth-only
+  std::vector<VkFormat> color_formats; // empty => depth-only
   VkFormat depth_format = VK_FORMAT_UNDEFINED;
-  VkCompareOp depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL;  // reverse-Z
+  VkCompareOp depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL; // reverse-Z
 
   VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
   VkCullModeFlags cull = VK_CULL_MODE_BACK_BIT;
@@ -47,7 +47,8 @@ struct GraphicsPipelineDesc {
 
   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
   u32 push_constant_size = 0;
-  VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkShaderStageFlags push_constant_stages =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
   std::vector<VkVertexInputBindingDescription> vertex_bindings;
   std::vector<VkVertexInputAttributeDescription> vertex_attributes;
@@ -72,12 +73,11 @@ public:
   [[nodiscard]] VkPipeline create(const ComputePipelineDesc& desc);
 
   // --- Layout helpers ----------------------------------------------------
-  [[nodiscard]] VkDescriptorSetLayout create_set_layout(
-      const std::vector<VkDescriptorSetLayoutBinding>& bindings,
-      VkDescriptorSetLayoutCreateFlags flags = 0);
+  [[nodiscard]] VkDescriptorSetLayout
+  create_set_layout(const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+                    VkDescriptorSetLayoutCreateFlags flags = 0);
   [[nodiscard]] VkPipelineLayout create_layout(std::vector<VkDescriptorSetLayout> sets,
-                                               u32 push_constant_size,
-                                               VkShaderStageFlags stages);
+                                               u32 push_constant_size, VkShaderStageFlags stages);
 
   void release(VkPipeline pipeline);
   void release(VkPipelineLayout layout);

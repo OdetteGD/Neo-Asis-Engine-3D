@@ -3,7 +3,7 @@
 Milestones are ordered by dependency, not by excitement. Each one is defined by
 what becomes *possible* when it lands.
 
-## M0 — Foundation (current)
+## M0 — Foundation (complete)
 
 Renderer infrastructure and the Android build.
 
@@ -12,24 +12,29 @@ Renderer infrastructure and the Android build.
 - [x] Atmosphere and volumetric cloud shaders
 - [x] Android build, lifecycle, APK CI
 - [x] Desktop player with a fly camera
+- [x] CI green: shader validation, desktop build, formatting
 - [ ] Publish the first tagged release
 
-## M1 — Geometry actually renders
+## M1 — Geometry actually renders (complete)
 
-The renderer is structurally complete but has no mesh upload path.
-
-- [ ] Mesh registry: vertex/index SSBO allocation, `cgltf` import
-- [ ] Material registry: bindless texture array, sampler defaults
-- [ ] `gbuffer.vert` wired to real per-mesh vertex ranges
-- [ ] Frustum culling against real mesh bounds
-- [ ] glTF sample scene (Sponza or a lighter equivalent) in CI as a smoke test
+- [x] Mesh registry: vertex/index arenas, `cgltf` import
+- [x] Material registry: bindless texture array with a default-white slot
+- [x] `gbuffer.vert` wired to real per-mesh vertex ranges via an index arena
+- [x] Procedural primitives (cube, sphere, plane) so the sample needs no assets
+- [x] Textures decoded with stb_image and uploaded to bindless slots
+- [x] Node hierarchy flattened into world transforms
+- [ ] Frustum culling against uploaded mesh bounds (bounds exist; culling is
+      still the conservative transform proxy)
+- [ ] glTF sample scene in CI as a smoke test
 - [ ] Screenshot comparison in CI to catch visual regressions
 
 ## M2 — Lighting and shadows that hold up
 
-- [ ] Clustered light assignment compute pass (grid already specified in `FrameData.h`)
+- [x] IBL baker running at load: sky capture → irradiance → GGX prefilter → BRDF LUT
+- [x] Sun-driven re-bake when the light direction drifts more than ~2 degrees
+- [ ] Clustered light assignment compute pass (grid specified in `FrameData.h`;
+      the shader still walks a flat bounded list)
 - [ ] Shadow cascade fitting with texel snapping
-- [ ] IBL baker running at load: equirect → cube → irradiance → prefilter chain
 - [ ] Point/spot shadow atlas
 - [ ] TAA with disocclusion rejection
 - [ ] GPU profiler timestamps per pass, surfaced in the FPS overlay
@@ -53,12 +58,13 @@ The renderer is structurally complete but has no mesh upload path.
 
 ## M5 — Editor and scripting
 
-The repository description commits to a .NET 10 scripting layer for Android.
-
+- [x] Managed ↔ native ABI (versioned `NeoHostApi`, append-only)
+- [x] C# scripting host: NativeAOT shared library, `dlopen` on device
+- [x] Hot reload on desktop (mtime watch, unload/reload)
+- [x] Script lifecycle: init / update / late update / shutdown
+- [x] World systems that are not tied to an entity
 - [ ] Editor UI (immediate-mode, drawn by the engine itself)
 - [ ] Scene hierarchy, inspector, asset browser
-- [ ] C# scripting host: NativeAOT for Android, hot reload on desktop
-- [ ] Managed ↔ native ABI (`scripting/` scaffolding exists)
 - [ ] Play-in-editor
 - [ ] Build pipeline that produces an APK from the editor on-device
 
