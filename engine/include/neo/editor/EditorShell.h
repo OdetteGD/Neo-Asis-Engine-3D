@@ -78,6 +78,13 @@ public:
   void set_visible(bool v) { visible_ = v; }
   void toggle_visible() { visible_ = !visible_; }
 
+  // Snapshot / restore: entering play mode captures the authored scene, and
+  // stopping restores it exactly. This is what makes play-in-editor safe — no
+  // simulation edit can leak back into the saved scene.
+  [[nodiscard]] bool has_snapshot() const { return snapshot_valid_; }
+  void capture_snapshot();
+  void restore_snapshot();
+
 private:
   void print(std::string line);
 
@@ -89,6 +96,15 @@ private:
   u64 play_frames_ = 0;
   bool visible_ = true;
   std::vector<std::string> console_;
+
+  // Scene snapshot taken on play() and restored on stop().
+  struct Snapshot {
+    std::vector<Transform> transforms;
+    std::vector<LightDesc> lights;
+    SkyDesc sky{};
+  };
+  Snapshot snapshot_{};
+  bool snapshot_valid_ = false;
 };
 
 } // namespace neo

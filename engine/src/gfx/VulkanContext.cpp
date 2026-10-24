@@ -120,6 +120,13 @@ std::unique_ptr<VulkanContext> VulkanContext::create(const DeviceDesc& desc) {
   auto ctx = std::unique_ptr<VulkanContext>(new VulkanContext());
   ctx->create_instance(desc);
   ctx->pick_physical_device(desc);
+  // Surface first: create_logical_device must request the present family, and
+  // it can only know which family that is once the surface exists. Creating
+  // the device first and calling vkGetDeviceQueue on a family that was never
+  // requested is undefined behaviour.
+  if (desc.native_window != nullptr) {
+    ctx->create_surface(desc.native_display, desc.native_window);
+  }
   ctx->create_logical_device(desc);
   if (ctx->device_ == VK_NULL_HANDLE)
     return nullptr; // unsupported device

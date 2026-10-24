@@ -48,6 +48,10 @@ struct DeviceDesc {
   u32 app_version = 0;
   bool enable_validation = false;
   bool prefer_discrete_gpu = true;
+  // Optional: when set, the surface is created between device selection and
+  // logical-device creation so the present queue family is actually requested.
+  void* native_window = nullptr;
+  void* native_display = nullptr;
   std::vector<const char*> extra_instance_extensions;
   std::vector<const char*> extra_device_extensions;
 };

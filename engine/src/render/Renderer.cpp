@@ -129,6 +129,11 @@ struct Renderer::Impl {
   VkBuffer cluster_indices = VK_NULL_HANDLE;
   VmaAllocation cluster_indices_alloc = VK_NULL_HANDLE;
   VkDescriptorSetLayout cluster_layout = VK_NULL_HANDLE;
+  VkFormat albedo_format_ = VK_FORMAT_R8G8B8A8_UNORM;
+  VkFormat normal_format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
+  VkFormat emissive_format_ = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+  VkFormat hdr_format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
+  VkFormat depth_format_ = VK_FORMAT_D32_SFLOAT;
   VkPipelineLayout cluster_pipeline_layout = VK_NULL_HANDLE;
   VkSampler linear_sampler = VK_NULL_HANDLE;
   VkSampler shadow_sampler = VK_NULL_HANDLE;
@@ -182,14 +187,62 @@ struct Renderer::Impl {
     img = Image{};
   }
 
+  // First format in `candidates` that supports `features` for optimal tiling.
+  // Rendering to an unsupported format leaves a null image behind, and the
+  // following vkCreateImageView on that null image segfaults — the crash class
+  // this replaces.
+  VkFormat pick_format(std::initializer_list<VkFormat> candidates,
+                       VkFormatFeatureFlags features) const {
+    for (VkFormat f : candidates) {
+      VkFormatProperties props{};
+      vkGetPhysicalDeviceFormatProperties(ctx->physical_device(), f, &props);
+      if ((props.optimalTilingFeatures & features) == features)
+        return f;
+    }
+    return VK_FORMAT_UNDEFINED;
+  }
+
   bool create_targets(u32 w, u32 h, const QualitySettings& q) {
     destroy_targets();
     if (w == 0 || h == 0)
       return false;
 
     const VkImageUsageFlags sampled = VK_IMAGE_USAGE_SAMPLED_BIT;
+    constexpr VkFormatFeatureFlags kColorAtt =
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
 
-    if (!create_image(depth, "Depth", kDepthFormat, w, h,
+    // Resolve every target format against real device support. Mali rejects
+    // B10G11R11 as a colour attachment on a number of drivers.
+    const VkFormat albedo_fmt = pick_format({kAlbedoFormat}, kColorAtt);
+    const VkFormat normal_fmt =
+        pick_format({kNormalFormat, VK_FORMAT_R16G16B16A16_SFLOAT}, kColorAtt);
+    const VkFormat emissive_fmt =
+        pick_format({kEmissiveFormat, VK_FORMAT_R16G16B16A16_SFLOAT}, kColorAtt);
+    const VkFormat hdr_fmt =
+        pick_format({kHdrFormat, VK_FORMAT_A2B10G10R10_UNORM_PACK32}, kColorAtt);
+    const VkFormat depth_fmt =
+        pick_format({kDepthFormat, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT},
+                    VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+    if (albedo_fmt == VK_FORMAT_UNDEFINED || normal_fmt == VK_FORMAT_UNDEFINED ||
+        emissive_fmt == VK_FORMAT_UNDEFINED || hdr_fmt == VK_FORMAT_UNDEFINED ||
+        depth_fmt == VK_FORMAT_UNDEFINED) {
+      NEO_ERROR(kRender,
+                "No supported render-target format (albedo={} normal={} emissive={} hdr={} "
+                "depth={}) — this GPU cannot run the deferred pipeline",
+                static_cast<i32>(albedo_fmt), static_cast<i32>(normal_fmt),
+                static_cast<i32>(emissive_fmt), static_cast<i32>(hdr_fmt),
+                static_cast<i32>(depth_fmt));
+      return false;
+    }
+
+    albedo_format_ = albedo_fmt;
+    normal_format_ = normal_fmt;
+    emissive_format_ = emissive_fmt;
+    hdr_format_ = hdr_fmt;
+    depth_format_ = depth_fmt;
+
+    if (!create_image(depth, "Depth", depth_fmt, w, h,
                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | sampled)) {
       return false;
     }
@@ -199,36 +252,40 @@ struct Renderer::Impl {
     dvci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     dvci.image = depth.image;
     dvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    dvci.format = kDepthFormat;
+    dvci.format = depth_fmt;
     dvci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
     NEO_VK_CHECK(vkCreateImageView(ctx->device(), &dvci, nullptr, &depth.view));
 
-    create_image(gbuffer_albedo, "GBufferAlbedo", kAlbedoFormat, w, h,
-                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled);
-    create_image(gbuffer_normal, "GBufferNormal", kNormalFormat, w, h,
-                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled);
-    create_image(gbuffer_emissive, "GBufferEmissive", kEmissiveFormat, w, h,
-                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled);
-    create_image(hdr, "HDR", kHdrFormat, w, h,
-                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    if (!create_image(gbuffer_albedo, "GBufferAlbedo", albedo_fmt, w, h,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled) ||
+        !create_image(gbuffer_normal, "GBufferNormal", normal_fmt, w, h,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled) ||
+        !create_image(gbuffer_emissive, "GBufferEmissive", emissive_fmt, w, h,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled) ||
+        !create_image(hdr, "HDR", hdr_fmt, w, h,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled |
+                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+      NEO_ERROR(kRender, "G-buffer target allocation failed (out of GPU memory?)");
+      return false;
+    }
 
     if (q.volumetric_clouds) {
       const u32 cw = std::max(1u, static_cast<u32>(static_cast<f32>(w) * q.cloud_render_scale));
       const u32 ch = std::max(1u, static_cast<u32>(static_cast<f32>(h) * q.cloud_render_scale));
-      create_image(cloud, "Clouds", kCloudFormat, cw, ch,
+      create_image(cloud, "Clouds", hdr_fmt, cw, ch,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled | VK_IMAGE_USAGE_STORAGE_BIT);
     }
 
     if (q.bloom) {
       const u32 bw = std::max(1u, w / 2), bh = std::max(1u, h / 2);
-      create_image(bloom, "Bloom", kHdrFormat, bw, bh,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled, kBloomMipCount);
+      create_image(bloom, "Bloom", hdr_fmt, bw, bh, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | sampled,
+                   kBloomMipCount);
       for (u32 i = 0; i < kBloomMipCount; ++i) {
         VkImageViewCreateInfo bvci{};
         bvci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         bvci.image = bloom.image;
         bvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        bvci.format = kHdrFormat;
+        bvci.format = hdr_fmt;
         bvci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, i, 1, 0, 1};
         NEO_VK_CHECK(vkCreateImageView(ctx->device(), &bvci, nullptr, &bloom_views[i]));
       }
@@ -239,14 +296,14 @@ struct Renderer::Impl {
     const u32 atlas_h = q.shadow_map_size;
     if (atlas_w != shadow.extent.width || atlas_h != shadow.extent.height) {
       destroy_image(shadow);
-      create_image(shadow, "ShadowAtlas", VK_FORMAT_D32_SFLOAT, atlas_w, atlas_h,
+      create_image(shadow, "ShadowAtlas", depth_fmt, atlas_w, atlas_h,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | sampled);
       vkDestroyImageView(ctx->device(), shadow.view, nullptr);
       VkImageViewCreateInfo svci{};
       svci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
       svci.image = shadow.image;
       svci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-      svci.format = VK_FORMAT_D32_SFLOAT;
+      svci.format = depth_fmt;
       svci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
       NEO_VK_CHECK(vkCreateImageView(ctx->device(), &svci, nullptr, &shadow.view));
     }
@@ -556,7 +613,7 @@ struct Renderer::Impl {
       d.vert = shadow_vs;
       d.frag = shadow_fs;
       d.layout = frame_pipeline_layout;
-      d.depth_format = VK_FORMAT_D32_SFLOAT;
+      d.depth_format = depth_format_;
       d.depth_compare = VK_COMPARE_OP_LESS_OR_EQUAL;
       d.depth_write = true;
       d.cull = VK_CULL_MODE_BACK_BIT;
@@ -573,8 +630,8 @@ struct Renderer::Impl {
       d.vert = gbuf_vs;
       d.frag = gbuf_fs;
       d.layout = frame_pipeline_layout;
-      d.color_formats = {kAlbedoFormat, kNormalFormat, kEmissiveFormat};
-      d.depth_format = kDepthFormat;
+      d.color_formats = {albedo_format_, normal_format_, emissive_format_};
+      d.depth_format = depth_format_;
       d.depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL; // reverse-Z
       d.depth_write = true;
       d.samples = q.msaa;
@@ -603,15 +660,16 @@ struct Renderer::Impl {
     };
 
     if (fs_vs) {
-      make_fs(pipelines->load("passes/sky.frag"), "sky", &p_sky, sky_pipeline_layout, {kHdrFormat});
+      make_fs(pipelines->load("passes/sky.frag"), "sky", &p_sky, sky_pipeline_layout,
+              {hdr_format_});
       make_fs(pipelines->load("passes/lighting.frag"), "lighting", &p_lighting,
-              lighting_pipeline_layout, {kHdrFormat});
+              lighting_pipeline_layout, {hdr_format_});
       make_fs(pipelines->load("fb/tonemap.frag"), "tonemap", &p_tonemap, post_pipeline_layout, {});
       if (q.bloom) {
         make_fs(pipelines->load("fb/bloom_down.frag"), "bloom_down", &p_bloom_down,
-                post_pipeline_layout, {kHdrFormat});
+                post_pipeline_layout, {hdr_format_});
         make_fs(pipelines->load("fb/bloom_up.frag"), "bloom_up", &p_bloom_up, post_pipeline_layout,
-                {kHdrFormat});
+                {hdr_format_});
       }
       VkShaderModule cluster_cs = pipelines->load("passes/cluster_assign.comp");
       if (cluster_cs) {
@@ -714,6 +772,8 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
   DeviceDesc dd{};
   dd.app_name = desc.app_name;
   dd.enable_validation = desc.enable_validation;
+  dd.native_window = desc.native_window;
+  dd.native_display = desc.native_display;
   r->ctx_ = VulkanContext::create(dd);
   if (!r->ctx_) {
     NEO_ERROR(kRender, "Vulkan device creation failed — this GPU cannot run the engine");
@@ -735,9 +795,7 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
   I.ctx = r->ctx_.get();
   I.alloc = &r->ctx_->allocator();
 
-  if (desc.native_window) {
-    r->ctx_->create_surface(desc.native_display, desc.native_window);
-  }
+  // Surface creation happens inside VulkanContext::create now. */
 
   SwapchainDesc sd{};
   sd.width = desc.width;
@@ -847,7 +905,10 @@ std::unique_ptr<Renderer> Renderer::create(const RendererDesc& desc) {
              Impl::kClusterGridY, Impl::kClusterGridZ, clusters, Impl::kMaxLightsPerCluster);
   }
 
-  I.create_targets(r->width_, r->height_, r->quality_);
+  if (!I.create_targets(r->width_, r->height_, r->quality_)) {
+    NEO_ERROR(kRender, "Render target creation failed — refusing to continue");
+    return nullptr;
+  }
   if (!I.create_pipelines(r->quality_)) {
     NEO_WARN(kRender, "Some pipelines failed to build — shaders may not have been compiled");
   }
@@ -999,7 +1060,9 @@ bool Renderer::begin_frame() {
       if (swapchain_) {
         width_ = swapchain_->extent().width;
         height_ = swapchain_->extent().height;
-        I.create_targets(width_, height_, quality_);
+        if (!I.create_targets(width_, height_, quality_)) {
+          NEO_ERROR(kRender, "Target rebuild failed after swapchain recreation");
+        }
       }
       return false;
     }

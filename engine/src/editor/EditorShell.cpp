@@ -22,7 +22,47 @@ void EditorShell::print(std::string line) {
   }
 }
 
+void EditorShell::capture_snapshot() {
+  if (!scene_)
+    return;
+  snapshot_.transforms.clear();
+  snapshot_.lights.clear();
+
+  // entity_count() is 1-based (slot 0 is the null handle).
+  for (u32 i = 1; i < scene_->entity_count(); ++i) {
+    snapshot_.transforms.push_back(scene_->transform(EntityHandle::make(i, 1)));
+  }
+  snapshot_.lights = scene_->lights();
+  snapshot_.sky = scene_->sky();
+  snapshot_valid_ = true;
+}
+
+void EditorShell::restore_snapshot() {
+  if (!scene_ || !snapshot_valid_)
+    return;
+
+  const usize count = std::min<usize>(snapshot_.transforms.size(), scene_->entity_count());
+  for (usize i = 1; i <= count && i <= snapshot_.transforms.size(); ++i) {
+    if (i - 1 < snapshot_.transforms.size()) {
+      scene_->transform(EntityHandle::make(static_cast<u32>(i), 1)) = snapshot_.transforms[i - 1];
+    }
+  }
+
+  // Lights and sky are copied wholesale.
+  const std::vector<LightDesc>& lights = snapshot_.lights;
+  for (usize i = 0; i < lights.size() && i < scene_->lights().size(); ++i) {
+    scene_->set_light(EntityHandle::make(static_cast<u32>(i + 1), 1), lights[i]);
+  }
+  scene_->sky() = snapshot_.sky;
+
+  print(fmt::format("editor: scene restored from snapshot ({} transforms, {} lights)",
+                    snapshot_.transforms.size(), snapshot_.lights.size()));
+}
+
 void EditorShell::play() {
+  // Capture before the first simulated frame so stop() can rewind exactly.
+  if (!snapshot_valid_)
+    capture_snapshot();
   state_ = PlayState::Playing;
   play_elapsed_ = 0.0;
   play_frames_ = 0;
@@ -37,7 +77,12 @@ void EditorShell::pause() {
 }
 
 void EditorShell::stop() {
+  const bool was_live = (state_ != PlayState::Stopped);
   state_ = PlayState::Stopped;
+  step_requested_ = false;
+  // Rewind: play mode must never mutate the authored scene permanently.
+  if (was_live && snapshot_valid_)
+    restore_snapshot();
   print("editor: STOPPED");
 }
 
